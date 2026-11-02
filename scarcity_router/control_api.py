@@ -2058,6 +2058,7 @@ class ControlPlane:
                     "restricted": live.get("restricted", 0),
                     "discovered": live.get("discovered", 0),
                     "errors": live.get("errors", 0),
+                    "errors_reported": live.get("errors_reported", False),
                     "retired": live.get("retired", []),
                     "observed_at": live.get("observed_at"),
                     # The worker-side actions are printed, never derived

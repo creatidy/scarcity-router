@@ -156,7 +156,7 @@ class AdoptionTests(unittest.TestCase):
         # And it stays visible in the source view.
         view = self.registry.source_view()[0]
         self.assertEqual(0, view["errors"])
-        self.assertEqual(1, view["discovered"])
+        self.assertEqual(1, view["restricted"])
 
     def test_ungranted_model_is_not_materialized_regardless_of_name(self) -> None:
         decisions = self._apply((_model("gpt-daybreak-blue-latest", ("high",)),))
@@ -165,8 +165,30 @@ class AdoptionTests(unittest.TestCase):
         self.assertEqual((), self.registry.derived_registrations())
         view = self.registry.source_view()[0]
         self.assertEqual(0, view["errors"])
-        self.assertEqual(1, view["discovered"])
+        self.assertEqual(1, view["restricted"])
         self.assertEqual(0, view["routable"])
+
+    def test_counter_categories_from_real_inventory(self) -> None:
+        cases = (
+            (_config(), "authenticated", (), (0, 0, 0)),
+            (_config(), "authenticated", (_model("gpt-6-sol"),), (1, 0, 0)),
+            (_config(), "authenticated", (_model("not-allowed"),), (0, 1, 0)),
+            (_config(auto_adopt=False), "authenticated", (_model("gpt-6-sol"),), (0, 1, 0)),
+            (_config(allowed_tracks=("openai/old-track",)), "authenticated", (_model("gpt-6-sol"),), (0, 1, 0)),
+            (_config(), "auth_required", (_model("gpt-6-sol"),), (0, 0, 1)),
+            (_config(), "authenticated", (_model("gpt-6-sol", ()),), (0, 0, 1)),
+            (_config(), "authenticated", (_model("gpt-6-sol"), _model("not-allowed"), _model("gpt-6-luna", ())), (1, 1, 1)),
+        )
+        for config, auth, models, expected in cases:
+            with self.subTest(config=config, auth=auth, models=models):
+                registry = SourceRegistry()
+                registry.sync_configuration((config,))
+                _ = registry.apply_inventory(_inventory("personal-openai", "worker-1", models, auth))
+                view = registry.source_view()[0]
+                self.assertEqual(expected, (view["routable"], view["restricted"], view["discovered"]))
+                self.assertEqual(len(models), sum(expected))
+                self.assertEqual(0, view["errors"])
+                self.assertIs(view["errors_reported"], False)
 
     def test_adoption_requires_an_authenticated_source(self) -> None:
         decisions = self._apply(SIX_GEN, auth_state="auth_required")

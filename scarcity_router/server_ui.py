@@ -1272,9 +1272,10 @@ def _sources(
             model_lines += '<li><details><summary>Dormant attestations</summary><p>These do not grant model access.</p><ul>' + dormant + '</ul></details></li>'
         counts = (
             f"{_esc(str(source.get('routable', 0)))} routable &middot; "
-            + f"{_esc(str(source.get('restricted', 0)))} restricted &middot; "
+            + f"{_esc(str(source.get('restricted', 0)))} local-policy restricted &middot; "
             + f"{_esc(str(source.get('discovered', 0)))} discovered / unclassified &middot; "
-            + f"{_esc(str(source.get('errors', 0)))} errors"
+            + (f"{_esc(str(source.get('errors')))} errors" if source.get("errors_reported") is True
+               else "per-model errors not reported")
         )
         rows += (
             "<tr>"

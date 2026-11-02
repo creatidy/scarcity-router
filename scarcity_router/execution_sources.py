@@ -589,7 +589,7 @@ class SourceRegistry:
         for source_id in sorted(self._sources):
             state = self._sources[source_id]
             inventory = state.inventory
-            routable = restricted = discovered = errors = 0
+            routable = restricted = discovered = 0
             models: list[dict[str, object]] = []
             if inventory is not None:
                 for model in inventory.models:
@@ -603,12 +603,8 @@ class SourceRegistry:
                     )
                     if effective_state == "routable":
                         routable += 1
-                    elif effective_state == "discovered":
-                        discovered += 1
-                    elif effective_state == "restricted":
+                    elif reason in ("model_not_allowed", "legacy_track_policy", "adoption_disabled"):
                         restricted += 1
-                    elif effective_state == "error":
-                        errors += 1
                     else:
                         discovered += 1
                     models.append(
@@ -639,7 +635,9 @@ class SourceRegistry:
                     "routable": routable,
                     "restricted": restricted,
                     "discovered": discovered,
-                    "errors": errors,
+                    # Retain the legacy numeric field; it is not a measured count.
+                    "errors": 0,
+                    "errors_reported": False,
                     "retired": sorted(state.retired),
                 }
             )
