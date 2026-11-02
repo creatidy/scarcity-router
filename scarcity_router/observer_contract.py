@@ -21,7 +21,7 @@ _ENUMS = {
     "health": {"ok", "unavailable", "auth_required", "schema_changed", "unsupported", "unknown"},
     "availability": {"unknown", "unavailable", "disabled"},
     "state": {"routable", "discovered", "retired", "not_in_latest_inventory"},
-    "reason": {"model_not_allowed", "legacy_track_policy", "adoption_disabled",
+    "reason": {"model_not_allowed", "legacy_track_policy", "adoption_disabled", "awaiting_inventory_refresh",
                "plan_lane_unverified", "source_not_authenticated", "effort_not_reported"},
     "lifecycle": {"retained_missing", "retired"},
     "observation_class": {"direct_observation", "provider_telemetry", "estimate", "local_limit", "unknown"},

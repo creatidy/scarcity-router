@@ -17,6 +17,7 @@ from scarcity_router.control_api import ControlPlane, ProducerEvent, ProducerEve
 from scarcity_router.gateway_contracts import hash_client_key
 from scarcity_router.capacity import CapacityWindow
 from scarcity_router.model_inventory import DiscoveredModel, ModelInventoryReport, SourceInventory
+from scarcity_router.observer_contract import project_snapshot
 from scarcity_router.resource_state import QuotaFact, ResourceHealth, ResourceIdentity, ResourceRegistration, ResourceStateSnapshot
 from scarcity_router.routing_core import ClientAuthorization
 from scarcity_router.server_config import ResourceConfig, ServerConfiguration, SourceConfig
@@ -229,6 +230,43 @@ class ObserverAccessTests(ServerHarness):
         self.assertEqual("model_not_allowed", discoveries[0]["reason"])
         self.assertNotIn("authentication", json.dumps(snapshot))
         self.assertNotIn("runtime_version", json.dumps(snapshot))
+
+    def test_granted_discovery_and_historical_replay_survive_inventory_refresh(self) -> None:
+        source = SourceConfig("owned", "codex_subscription", "Synthetic", "worker-1")
+        report = ModelInventoryReport(worker_id="worker-1", sources=(SourceInventory(
+            source_id="owned", adapter_id="codex:owned", kind="codex_subscription",
+            observed_at="2026-09-16T12:00:00.000Z", auth_state="authenticated",
+            runtime_name="codex", runtime_version="1",
+            models=(DiscoveredModel("restricted-model", ("high",)),),
+        ),))
+        with patch.object(self.plane, "_worker_id_exists", return_value=True):
+            self.plane._save_config(ServerConfiguration(sources=(source,)))  # pyright: ignore[reportPrivateUsage]
+            self.plane._apply_source_inventory(report)  # pyright: ignore[reportPrivateUsage]
+            before = cast("dict[str, object]", self.observer("GET", "/observer/v1/snapshot")[1])
+            self.plane.service_set_source_model_policy("owned", {"allowed_models": ["restricted-model"]})
+            status, raw = self.observer("GET", "/observer/v1/snapshot")
+            self.assertEqual(200, status)
+            waiting = cast("dict[str, object]", cast("dict[str, object]", raw)["snapshot"])
+            discoveries = cast("list[dict[str, object]]", waiting["discoveries"])
+            self.assertEqual("awaiting_inventory_refresh", discoveries[0]["reason"])
+            status, raw = self.observer("POST", "/observer/v1/replay", {"cursor": before["cursor"]})
+            self.assertEqual(200, status)
+            waiting_events = cast("list[dict[str, object]]", cast("dict[str, object]", raw)["events"])
+            self.assertEqual(waiting, waiting_events[-1]["snapshot"])
+            self.plane._apply_source_inventory(report)  # pyright: ignore[reportPrivateUsage]
+        status, raw = self.observer("GET", "/observer/v1/snapshot")
+        self.assertEqual(200, status)
+        current = cast("dict[str, object]", cast("dict[str, object]", raw)["snapshot"])
+        self.assertNotEqual("awaiting_inventory_refresh", cast("list[dict[str, object]]", current["discoveries"])[0]["reason"])
+        status, raw = self.observer("POST", "/observer/v1/replay", {"cursor": before["cursor"]})
+        self.assertEqual(200, status)
+        events = cast("list[dict[str, object]]", cast("dict[str, object]", raw)["events"])
+        self.assertTrue(any(event["snapshot"] == waiting for event in events))
+        self.assertEqual(current, events[-1]["snapshot"])
+        document = cast("dict[str, object]", json.loads(self.plane.producer_event_snapshot().payload))
+        cast("list[dict[str, object]]", document["discoveries"])[0]["reason"] = "unapproved_reason"
+        with self.assertRaises(ValueError):
+            _ = project_snapshot(json.dumps(document))
 
     def test_faulted_producer_returns_safe_service_unavailable(self) -> None:
         with patch.object(self.plane, "producer_event_snapshot", side_effect=ServerStoreError("SYNTHETIC-PRIVATE")):
