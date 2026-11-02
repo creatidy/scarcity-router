@@ -907,6 +907,7 @@ def _clients(
             "<tr>"
             + f"<td><code>{_esc(client['client_id'])}</code><br>"
             + f"<span class=\"muted\">{_esc(client['label'])}</span></td>"
+            + f"<td>{'Read-only observer' if client.get('role') == 'observer' else 'Inference'}</td>"
             + f"<td>{_esc(client['created_at'])}</td>"
             + "<td>"
             + (
@@ -928,14 +929,14 @@ def _clients(
         )
     if not rows:
         rows = (
-            "<tr><td colspan=\"4\" class=\"muted\">No client keys issued "
+            "<tr><td colspan=\"5\" class=\"muted\">No client keys issued "
             + "yet.</td></tr>"
         )
     body = (
-        "<div class=\"notice\">Client keys authorize inference only — never "
+        "<div class=\"notice\">Inference and read-only observer keys have separate access; neither authorizes "
         + "administration. Only the SHA-256 hash of a key is stored; the key "
         + "itself is displayed exactly once at issuance.</div>"
-        + "<table><tr><th>Client</th><th>Created</th><th>Status</th><th></th></tr>"
+        + "<table><tr><th>Client</th><th>Access</th><th>Created</th><th>Status</th><th></th></tr>"
         + rows
         + "</table>"
         + "<h2>Issue a client key</h2>"
@@ -949,6 +950,16 @@ def _clients(
         + "<textarea name=\"authorization\" rows=\"3\" "
         + "placeholder='{\"allowed_providers\": [\"zai\"]}'></textarea>"
         + "<button type=\"submit\">Issue key</button></form></fieldset>"
+        + "<h2>Create a read-only connection</h2>"
+        + "<p>For a trusted Console or CLI: create a labeled key, copy it once into "
+        + "trusted consumer-side configuration, and revoke it here if lost or exposed. "
+        + "This key cannot run inference or administer the server. Creating it does not verify connectivity.</p>"
+        + "<fieldset><legend>Read-only connection</legend>"
+        + _form_open("/admin/clients/issue", csrf)
+        + "<input type=\"hidden\" name=\"role\" value=\"observer\">"
+        + "<label for=\"observer-label\">Connection label</label>"
+        + "<input id=\"observer-label\" type=\"text\" name=\"label\" required>"
+        + "<button type=\"submit\">Create read-only key</button></form></fieldset>"
     )
     plane.send_html(handler, 200, _page(plane, handler, "Client API keys", body))
 
@@ -958,12 +969,17 @@ def _clients_issue(
 ) -> None:
     _ = method
     result: dict[str, object] | None = None
+    role = "inference"
     error = ""
     error_status = 200
     try:
         _ = plane.require_admin_session(handler, mutating=True)
         form = plane.read_form(handler)
         document: dict[str, object] = {"label": form.get("label")}
+        role = form.get("role", "inference")
+        if role not in ("inference", "observer"):
+            raise ControlHTTPError.invalid_request("invalid key role")
+        document["role"] = role
         client_id = (form.get("client_id") or "").strip()
         if client_id:
             document["client_id"] = client_id
@@ -990,6 +1006,9 @@ def _clients_issue(
             + "</pre>Client id: <code>"
             + _esc(result.get("client_id"))
             + "</code></div>"
+            + ("<p>Copy this read-only key to a trusted server-side consumer configuration. "
+               + "If it is lost, issue a replacement; if exposed, revoke it.</p>"
+               if role == "observer" else "")
         )
     elif error:
         body = f"<div class=\"error\">{_esc(error)}</div>"

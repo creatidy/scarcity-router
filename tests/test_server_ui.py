@@ -240,16 +240,44 @@ class UiMutationFlowTests(ServerHarness):
         match = re.search(r"<pre>(sk-sr-[A-Za-z0-9_\-]+)</pre>", html)
         assert match is not None, "issuance page did not render the key"
         api_key = match.group(1)
-        # The issuance page shows the key; the listing page never does.
         status, html, _headers = _get(self.port, "/admin/clients", cookie)
         self.assertEqual(200, status)
         self.assertNotIn(api_key, html)
         self.assertIn("active", html)
-        # The shown key authenticates over the machine interface.
         status, _payload, _headers = self.exchange(
             "GET", "/v1/status", None, headers={"Authorization": f"Bearer {api_key}"}
         )
         self.assertEqual(200, status)
+
+    def test_read_only_connection_issuance_and_revocation(self) -> None:
+        cookie, csrf = self._session()
+        status, html, _ = _get(self.port, "/admin/clients", cookie)
+        self.assertEqual(200, status)
+        self.assertIn("Create read-only key", html)
+        self.assertIn("does not verify connectivity", html)
+        status, html, _ = _form(self.port, "/admin/clients/issue", {
+            "csrf": csrf, "label": "synthetic console", "role": "observer",
+        }, cookie)
+        self.assertEqual(200, status)
+        match = re.search(r"<pre>(sk-sr-[A-Za-z0-9_\-]+)</pre>", html)
+        assert match is not None
+        key = match.group(1)
+        records = [record for record in self.plane.store.list_client_keys() if record.label == "synthetic console"]
+        self.assertEqual(1, len(records))
+        self.assertEqual("observer", records[0].role)
+        status, listing, _ = _get(self.port, "/admin/clients", cookie)
+        self.assertEqual(200, status)
+        self.assertIn("Read-only observer", listing)
+        self.assertIn("synthetic console", listing)
+        self.assertNotIn(key, listing)
+        status, _, _ = self.exchange("GET", "/observer/v1/snapshot", headers={"Authorization": f"Bearer {key}"}, with_session=False)
+        self.assertEqual(200, status)
+        status, _, _ = _form(self.port, "/admin/clients/revoke", {
+            "csrf": csrf, "client_id": records[0].client_id,
+        }, cookie)
+        self.assertEqual(303, status)
+        status, _, _ = self.exchange("GET", "/observer/v1/snapshot", headers={"Authorization": f"Bearer {key}"}, with_session=False)
+        self.assertEqual(401, status)
 
     def _pair_worker(self, cookie: str, csrf: str, label: str) -> str:
         """Initiate pairing in the UI and redeem it over the M05 protocol."""

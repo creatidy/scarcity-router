@@ -69,8 +69,8 @@ for freshness, correlation, deduplication, reconnect, history-gap detection,
 resynchronization and meaningful-change notifications, including the
 producer-state correctness integrated from excluded #140 (D-083); #185 owns
 compatible artifact/version transitions. No new transport/API is accepted
-here. A new read-only consumer identity or exposed network contract requires
-explicit security authorization (D-083).
+here except the narrowly authorized observer identity and HTTP contract in
+D-086, which supersedes D-083's prior authorization gate for that scope only.
 An internal `ControlPlane.producer_snapshot()` now combines configured and
 source-derived registrations, disabled resources, retained discoveries and
 evaluated observation freshness under the control-plane publication lock.
@@ -112,9 +112,39 @@ a new epoch: old event identities remain historical records, but a consumer
 resynchronizes rather than treating prior-epoch ephemeral observations as live.
 Configuration is reconstructed after restart; discovery, observations and
 worker connectivity are not reconstructed from event history. A single active
-producer owns an epoch; a newer process fences an older one. These are internal
-interfaces only, not a new externally exposed or authorized consumer contract.
-External consumer authorization and acceptance remain open.
+producer owns an epoch; a newer process fences an older one. D-086 authorizes
+the narrowly scoped observer HTTP contract below; downstream Console/CLI
+integration and installed/browser acceptance remain open.
+
+### Read-only observer connections
+
+In the existing administrator UI, open **Client API keys**, enter a connection
+label under **Create a read-only connection**, and create the key. Copy it once
+to trusted server-side Console or CLI configuration; it is never shown again.
+If lost, issue a replacement. If exposed or no longer needed, revoke it in the
+same list. Key creation configures access; it does not verify that a consumer
+is connected. Never put the key in a URL, browser localStorage or frontend code.
+
+An observer sends its key as `Authorization: Bearer <key>` over the existing
+approved transport. `GET /observer/v1/snapshot` returns the v1 safe snapshot
+and cursor. `POST /observer/v1/replay` accepts `{"cursor": <cursor>}` and
+returns allowlisted events, or an explicit `resync_reason` and snapshot. The
+POST is a bounded read and does not trigger provider collection or inference.
+The complete cursor is opaque to clients and belongs in the request body, not
+a URL. `provenance_current: false` means historical event timestamps may be
+older than the latest observation; request a new snapshot when exact current
+provenance is needed. A historical event is not proof of current availability.
+Every request rechecks the key; revoked keys cannot read or replay.
+
+The observer projection excludes credentials, prompts, raw provider/account
+payloads, private audit information, quota-pool identifiers and source auth
+details. Its field allowlist is identical for current snapshots and replay.
+Only the existing listener and transport rules apply; no CORS, stream or new
+listener is introduced. Administrator, inference, observer and worker scopes
+remain separate. The observer key is not an inference key and vice versa.
+Store migration 6 marks all existing client keys as inference keys; older
+servers cannot safely read the newer schema. Upgrade the server before issuing
+observer keys and do not downlevel the store.
 Request audit/trace export is diagnostics, not a settlement ledger. CLI
 status UX (#182) is independent of Console delivery and retains JSON/pipe/
 CI/unknown/no-color behavior.

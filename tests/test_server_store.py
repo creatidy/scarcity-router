@@ -1235,7 +1235,7 @@ os._exit(0)
         try:
             return tuple(cast("list[tuple[object, ...]]", reader.execute(sql).fetchall()) for sql in (
                 "SELECT * FROM server_configuration", "SELECT * FROM provider_secrets",
-                "SELECT * FROM client_keys", "SELECT * FROM audit_records ORDER BY seq",
+                "SELECT client_id, key_hash, label, created_at, revoked_at FROM client_keys", "SELECT * FROM audit_records ORDER BY seq",
             ))
         finally:
             reader.close()
