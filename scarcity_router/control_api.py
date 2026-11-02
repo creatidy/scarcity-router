@@ -109,6 +109,7 @@ from .capacity import CapacityDiagnostic, CapacitySnapshot
 from .eligibility import ExecutionEligibility
 from .execution_sources import SourceRegistry, add_configured_resources
 from .model_inventory import AUTH_UNPROBEABLE_KINDS, ModelInventoryReport, is_source_resource_id
+from .observer_contract import project_snapshot
 from .resource_state import (
     RESOURCE_STATE_SCHEMA_VERSION,
     QuotaFact,
@@ -970,6 +971,8 @@ class ControlPlane:
             return True
         if path in (MACHINE_STATUS_PATH, MACHINE_SELECT_PATH, MACHINE_SIMULATE_PATH):
             return True
+        if path == "/observer/v1" or path.startswith("/observer/v1/"):
+            return True
         if path == ROOT_PATH or path.startswith(ADMIN_PREFIX):
             return True
         return path.startswith(CONTROL_PREFIX)
@@ -990,6 +993,9 @@ class ControlPlane:
                 return
             if path in (MACHINE_STATUS_PATH, MACHINE_SELECT_PATH, MACHINE_SIMULATE_PATH):
                 self._route_machine(method, path, handler)
+                return
+            if path == "/observer/v1" or path.startswith("/observer/v1/"):
+                self._route_observer(method, path, handler)
                 return
             if path.startswith(CONTROL_PREFIX):
                 self._route_control(method, path, handler)
@@ -1294,6 +1300,73 @@ class ControlPlane:
         if client_id is None:
             raise ControlHTTPError.unauthenticated("invalid API key")
         return client_id
+
+    def _route_observer(self, method: str, path: str, handler: GatewayRequestHandler) -> None:
+        """Authenticate each bounded observer read against current store state."""
+        # A failed authentication or method check must not leave an unread
+        # request body available as a subsequent HTTP/1.1 request.
+        handler.close_connection = True
+        values = handler.headers.get_all("Authorization")
+        if values is None or len(values) != 1:
+            raise ControlHTTPError.unauthenticated("missing observer key")
+        scheme, _, key = values[0].strip().partition(" ")
+        key = key.strip()
+        if scheme.lower() != "bearer" or not key or len(key) > _MAX_KEY_LENGTH:
+            raise ControlHTTPError.unauthenticated("invalid observer key")
+        directory = ClientKeyDirectory(self._store.active_client_key_hashes(role="observer"))
+        if directory.authenticate(key) is None:
+            raise ControlHTTPError.unauthenticated("invalid observer key")
+        if "?" in handler.path:
+            raise ControlHTTPError.invalid_request("observer requests do not accept query parameters")
+        if path == "/observer/v1/snapshot":
+            if method != "GET":
+                raise ControlHTTPError.method_not_allowed()
+            lengths = handler.headers.get_all("Content-Length") or []
+            if handler.headers.get_all("Transfer-Encoding") or len(lengths) > 1 or any(
+                value.strip() != "0" for value in lengths
+            ):
+                handler.close_connection = True
+                raise ControlHTTPError.invalid_request("snapshot requests do not accept a body")
+            try:
+                snapshot = self.producer_event_snapshot()
+            except ServerStoreError:
+                raise ControlHTTPError(503, "observer_unavailable", "observer state temporarily unavailable") from None
+            self._send_json(handler, 200, {"schema_version": 1, "cursor": asdict(snapshot.cursor),
+                                           "snapshot": project_snapshot(snapshot.payload)})
+            return
+        if path == "/observer/v1/replay":
+            if method != "POST":
+                raise ControlHTTPError.method_not_allowed()
+            document = self._require_json_body(handler)
+            raw = document.get("cursor")
+            if set(document) != {"cursor"} or not isinstance(raw, dict):
+                raise ControlHTTPError.invalid_request("cursor object is required")
+            cursor_data = cast("dict[str, object]", raw)
+            if set(cursor_data) != {"epoch", "sequence", "provenance", "schema_version"}:
+                raise ControlHTTPError.invalid_request("invalid cursor")
+            epoch, sequence = cursor_data["epoch"], cursor_data["sequence"]
+            provenance, version = cursor_data["provenance"], cursor_data["schema_version"]
+            if (not isinstance(epoch, str) or len(epoch) != 32 or any(ch not in "0123456789abcdef" for ch in epoch)
+                    or type(sequence) is not int or sequence < 0 or sequence > 2**63 - 1
+                    or not isinstance(provenance, str) or len(provenance) != 64
+                    or any(ch not in "0123456789abcdef" for ch in provenance)
+                    or type(version) is not int or version < 1 or version > 2**31 - 1):
+                raise ControlHTTPError.invalid_request("invalid cursor")
+            try:
+                replay = self.producer_replay(ProducerCursor(epoch, sequence, provenance, version))
+            except ServerStoreError:
+                raise ControlHTTPError(503, "observer_unavailable", "observer state temporarily unavailable") from None
+            resync = replay.resync
+            self._send_json(handler, 200, {
+                "schema_version": 1, "cursor": asdict(replay.cursor),
+                "events": [{"cursor": asdict(event.cursor), "snapshot": project_snapshot(event.payload)}
+                           for event in replay.events],
+                "resync": None if resync is None else {"cursor": asdict(resync.cursor),
+                                                         "snapshot": project_snapshot(resync.payload)},
+                "resync_reason": replay.reason, "provenance_current": replay.provenance_current,
+            })
+            return
+        raise ControlHTTPError.not_found("unknown observer URL")
 
     # ── Machine-interface control endpoints (M08 parity) ─────────────────
 
@@ -2073,6 +2146,11 @@ class ControlPlane:
         self._save_config(self._updated(aliases=aliases))
 
     def service_issue_client_key(self, document: Mapping[str, object]) -> dict[str, object]:
+        role = document.get("role", "inference")
+        if role not in ("inference", "observer"):
+            raise ControlHTTPError.invalid_request("role must be inference or observer")
+        if role == "observer" and document.get("authorization") is not None:
+            raise ControlHTTPError.invalid_request("observer keys cannot have inference authorization")
         label = document.get("label")
         if not isinstance(label, str) or not label.strip():
             raise ControlHTTPError.invalid_request("label is required")
@@ -2111,6 +2189,7 @@ class ControlPlane:
             key_hash=hash_client_key(key),
             label=label,
             created_at=format_utc(self._clock()),
+            role=cast(str, role),
         )
         self._rebuild_application()
         return {
@@ -2282,9 +2361,10 @@ class ControlPlane:
                 "label": record.label,
                 "created_at": record.created_at,
                 "revoked_at": record.revoked_at,
+                "role": record.role,
                 "authorization": (
                     self._config.client_authorizations[record.client_id].to_dict()
-                    if record.client_id in self._config.client_authorizations
+                    if record.role == "inference" and record.client_id in self._config.client_authorizations
                     else None
                 ),
             }

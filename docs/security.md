@@ -255,11 +255,15 @@ notes.
 
 ### Identities and authentication
 
-- **Three separate identity classes** with separate credentials and
+- **Four separate identity classes** with separate credentials and
   permissions: **administrator** (configuration, provider credentials,
   pairing, key issuance, revocation), **inference client** (execution
   requests only, never administration), **worker** (one per-device identity,
-  execute/state-report scope only).
+  execute/state-report scope only), and **observer** (only the versioned
+  read-only observer snapshot/replay endpoints; no inference, administration
+  or worker access). Existing inference credentials do not confer observer access.
+  Observer keys are administrator-issued, hash-only, displayed once and
+  individually revocable; every observer request checks current authorization.
 - No shared default password; credentials are issued on first-use paths with
   per-instance randomness; **revocation** exists for every class and takes
   effect without redeployment.

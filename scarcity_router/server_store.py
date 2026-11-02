@@ -63,7 +63,7 @@ from typing import Callable, cast
 
 from .gateway_validation import v_safe_id, v_str
 
-STORE_SCHEMA_VERSION = 5
+STORE_SCHEMA_VERSION = 6
 
 STORE_FILE_NAME = "server-state.sqlite3"
 DATA_DIR_NAME = "scarcity-router"
@@ -239,6 +239,12 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             "CREATE TABLE producer_events (sequence INTEGER PRIMARY KEY, epoch TEXT NOT NULL, payload TEXT NOT NULL)",
         ),
     ),
+    (
+        6,
+        (
+            "ALTER TABLE client_keys ADD COLUMN role TEXT NOT NULL DEFAULT 'inference' CHECK (role IN ('inference', 'observer'))",
+        ),
+    ),
 )
 
 _AUDIT_HARD_CAP = 100_000
@@ -296,13 +302,14 @@ class AdminIdentityRecord:
 
 @dataclass(frozen=True)
 class ClientKeyRecord:
-    """One inference-client key entry (hash only, never key material)."""
+    """One scoped key entry (hash only, never key material)."""
 
     client_id: str
     key_hash: str
     label: str
     created_at: str
     revoked_at: str | None
+    role: str = "inference"
 
 
 def default_server_data_dir(env: Mapping[str, str] | None = None) -> Path:
@@ -1607,7 +1614,7 @@ class ServerStore:
     def list_client_keys(self) -> tuple[ClientKeyRecord, ...]:
         with self._lock:
             rows = _fetch_rows(self._connection,
-                "SELECT client_id, key_hash, label, created_at, revoked_at "
+                "SELECT client_id, key_hash, label, created_at, revoked_at, role "
                 + "FROM client_keys ORDER BY client_id"
             )
         return tuple(
@@ -1621,21 +1628,25 @@ class ServerStore:
                     if row["revoked_at"] is not None
                     else None
                 ),
+                role=cast(str, row["role"]),
             )
             for row in rows
         )
 
     def add_client_key(
-        self, *, client_id: str, key_hash: str, label: str, created_at: str
+        self, *, client_id: str, key_hash: str, label: str, created_at: str,
+        role: str = "inference",
     ) -> None:
         _ = v_safe_id(client_id, "store.client_id")
         _ = v_str(label, "store.client_label")
+        if role not in ("inference", "observer"):
+            raise ServerStoreError("invalid client key role")
         with self._lock:
             try:
                 _ = self._connection.execute(
                     "INSERT INTO client_keys (client_id, key_hash, label, "
-                    + "created_at, revoked_at) VALUES (?, ?, ?, ?, NULL)",
-                    (client_id, key_hash, label, created_at),
+                    + "created_at, revoked_at, role) VALUES (?, ?, ?, ?, NULL, ?)",
+                    (client_id, key_hash, label, created_at, role),
                 )
             except sqlite3.IntegrityError as exc:
                 raise ServerStoreError(
@@ -1656,12 +1667,14 @@ class ServerStore:
             )
             return int(cursor.rowcount) > 0
 
-    def active_client_key_hashes(self) -> dict[str, str]:
-        """Active client id -> SHA-256 key hash (feeds ClientKeyDirectory)."""
+    def active_client_key_hashes(self, *, role: str = "inference") -> dict[str, str]:
+        """Active client id -> SHA-256 key hash for exactly one role."""
+        if role not in ("inference", "observer"):
+            raise ServerStoreError("invalid client key role")
         with self._lock:
             rows = _fetch_rows(self._connection,
                 "SELECT client_id, key_hash FROM client_keys "
-                + "WHERE revoked_at IS NULL ORDER BY client_id"
+                + "WHERE revoked_at IS NULL AND role = ? ORDER BY client_id", (role,)
             )
         return {cast(str, row["client_id"]): cast(str, row["key_hash"]) for row in rows}
 

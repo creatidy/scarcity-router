@@ -146,6 +146,8 @@ class MIInstalledServerTests(unittest.TestCase):
             plane = ControlPlane(store=store, pbkdf2_iterations=1000)
             issued = plane.service_issue_client_key({"label": "synthetic-acceptance"})
             client_key = cast(str, issued["api_key"])
+            observer = plane.service_issue_client_key({"label": "synthetic-observer", "role": "observer"})
+            observer_key = cast(str, observer["api_key"])
             plane.close_worker_store()
             store.close()
 
@@ -186,6 +188,31 @@ class MIInstalledServerTests(unittest.TestCase):
                 reference = cast(dict[str, str], response["mi_utilization"])
                 self.assertTrue(reference["identifier"].startswith("urn:mi:utilization:sha256:"))
                 self.assertNotIn("context", response)
+                connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                try:
+                    connection.request("GET", "/observer/v1/snapshot", headers={"Authorization": f"Bearer {observer_key}"})
+                    reply = connection.getresponse()
+                    self.assertEqual(200, reply.status)
+                    snapshot = cast(dict[str, object], json.loads(reply.read()))
+                finally:
+                    connection.close()
+                connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                try:
+                    connection.request("POST", "/observer/v1/replay", body=json.dumps({"cursor": snapshot["cursor"]}),
+                                       headers={"Content-Type": "application/json", "Authorization": f"Bearer {observer_key}"})
+                    reply = connection.getresponse()
+                    self.assertEqual(200, reply.status)
+                    self.assertEqual([], cast(dict[str, object], json.loads(reply.read()))["events"])
+                finally:
+                    connection.close()
+                connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                try:
+                    connection.request("GET", "/v1/models", headers={"Authorization": f"Bearer {observer_key}"})
+                    reply = connection.getresponse()
+                    self.assertEqual(401, reply.status)
+                    _ = reply.read()
+                finally:
+                    connection.close()
             finally:
                 process.send_signal(signal.SIGINT)
                 try:

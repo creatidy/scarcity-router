@@ -6851,3 +6851,30 @@ No MI/Kernel mutation, model inference, Daybreak, release or deployment is autho
   observed; complete authenticated Windows execution and Docker Desktop host
   networking were not established. Host-header rejection of `localhost` on a
   `127.0.0.1` bind is a separate security-sensitive behavior, not relaxed here.
+
+## D-086: Read-only observer access (#183, 2026-11-02)
+
+- **Status:** Owner-authorized, bounded implementation; subject to independent
+  review and integration. Supersedes D-083's prior external-access decision
+  gate only for this observer scope. It does not establish Console/CLI
+  conformance or browser/installed acceptance by downstream consumers.
+- **Identity:** The administrator issues labeled, individually revocable
+  observer keys through the existing client-key lifecycle. They are displayed
+  once and stored hash-only with an explicit scope. Existing keys migrate as
+  inference keys. Observer and inference access are disjoint; neither grants
+  administrator or worker privileges. Each observer request checks live scope.
+- **Contract:** Versioned bounded snapshot and replay reads use the existing
+  listener and internal producer. A single explicit allowlist applies to current
+  and historical state. Credentials, prompts, raw account/provider payloads,
+  private audit content and unapproved operational identifiers are excluded.
+  No reader triggers collection or inference. Cursor gaps and restart epochs
+  require the existing explicit resynchronization behavior.
+- **Transport:** Existing loopback/TLS rules remain unchanged; no new remote
+  exposure, cross-origin access, stream transport, listener or service is
+  authorized. A consumer must keep its key in a trusted server-side or otherwise
+  separately accepted secure boundary, never browser localStorage.
+- **Review:** Owner separately allowed preparation of one linked PR despite
+  exhausted #183 review capacity solely to obtain its canonical identity. This
+  does not authorize review #11, raise the effective maximum, alter D-069A,
+  authorize integration, or reset the ten consumed ordinals. Any review beyond
+  #10 requires direct owner authority for that exact PR and finite maximum.
