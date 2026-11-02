@@ -424,7 +424,8 @@ class UnknownAndRestrictedModelsTests(SourcesComposedWorld):
             view = self.source_view(SOURCE_ID)
             self.assertEqual(1, view["routable"])
             self.assertEqual(0, view["restricted"])
-            self.assertEqual(2, view["errors"])
+            self.assertEqual(0, view["errors"])
+            self.assertEqual(2, view["discovered"])
             detected = cast("list[dict[str, object]]", view["detected_models"])
             states = {
                 cast("str", m["slug"]): cast("str", m["state"]) for m in detected

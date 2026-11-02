@@ -16,12 +16,14 @@ import urllib.parse
 from dataclasses import replace
 
 from scarcity_router.model_inventory import DiscoveredModel, ModelInventoryReport, SourceInventory
+from scarcity_router.server_ui import _source_guidance  # pyright: ignore[reportPrivateUsage]
 
 from tests.server_fixtures import (
     FAKE_ADMIN_PASSWORD,
     FAKE_ADMIN_CLAIM,
     FAKE_PROVIDER_SECRET,
     ServerHarness,
+    resource_document,
 )
 
 
@@ -168,6 +170,86 @@ class UiMutationFlowTests(ServerHarness):
         status, html, _headers = _get(self.port, "/admin/providers", cookie)
         assert status == 200
         return cookie, _csrf_of(html)
+
+    def test_worker_deletion_refusals_and_success(self) -> None:
+        cookie, csrf = self._session()
+        worker_id = self._pair_worker(cookie, csrf, "Worker")
+        fields = {"csrf": csrf, "worker_id": worker_id}
+        status, html, _ = _form(self.port, "/admin/workers/delete", fields, cookie)
+        self.assertEqual(409, status)
+        self.assertIn("Revoke", html)
+        _ = self.plane.service_add_resource(resource_document(
+            "worker-resource", channel="worker_bridged", endpoint_id=None, worker_id=worker_id,
+        ))
+        self.plane.service_revoke_worker(worker_id)
+        status, html, _ = _get(self.port, "/admin/workers", cookie)
+        self.assertEqual(200, status)
+        self.assertNotIn('action="/admin/workers/delete"', html)
+        status, html, _ = _form(self.port, "/admin/workers/delete", fields, cookie)
+        self.assertEqual(409, status)
+        self.assertIn("references", html)
+        self.plane.service_remove_resource("worker-resource")
+        self.plane.store.append_audit_record(
+            payload={"worker_id": worker_id}, recorded_at="2026-09-16T12:00:00.000Z",
+            max_records=100, max_age_seconds=86400,
+        )
+        audit_count = self.plane.store.audit_record_count()
+        status, html, _ = _get(self.port, "/admin/workers", cookie)
+        self.assertIn('action="/admin/workers/delete"', html)
+        status, _, _ = _form(self.port, "/admin/workers/delete", {"worker_id": worker_id}, cookie)
+        self.assertEqual(403, status)
+        status, _, _ = _form(self.port, "/admin/workers/delete", fields, cookie)
+        self.assertEqual(303, status)
+        self.assertFalse(any(w["worker_id"] == worker_id for w in self.plane.workers_view()))
+        self.assertEqual(audit_count, self.plane.store.audit_record_count())
+
+    def test_resources_show_effective_limits(self) -> None:
+        cookie, _ = self._session()
+        status, html, _ = _get(self.port, "/admin/resources", cookie)
+        self.assertEqual(200, status)
+        self.assertIn("Execution limits", html)
+        self.assertIn("16777216 bytes", html)
+        self.assertIn("does not guarantee capacity", html)
+
+    def test_derived_resources_and_source_reference(self) -> None:
+        cookie, csrf = self._session()
+        worker_id = self._pair_worker(cookie, csrf, "Worker")
+        status, _, _ = _form(self.port, "/admin/sources/add", {
+            "csrf": csrf, "label": "Source", "worker_id": worker_id,
+        }, cookie)
+        self.assertEqual(303, status)
+        source = self.plane.configuration.sources[0]
+        self.plane.service_set_source_model_policy(source.source_id, {"allowed_models": ["synthetic-model"]})
+        self.plane._apply_source_inventory(ModelInventoryReport(worker_id=worker_id, sources=(  # pyright: ignore[reportPrivateUsage]
+            SourceInventory(source_id=source.source_id, adapter_id=f"codex:{source.source_id}",
+                            kind="codex_subscription", observed_at="2026-09-16T12:00:00.000Z",
+                            auth_state="authenticated", runtime_name="codex", runtime_version="1.2.3",
+                            models=(DiscoveredModel("synthetic-model", ("high",)),)),
+        )))
+        _ = self.plane.service_add_resource(resource_document("configured", endpoint_id=None))
+        status, html, _ = _get(self.port, "/admin/resources", cookie)
+        self.assertEqual(200, status)
+        self.assertIn("configured", html)
+        self.assertIn("synthetic-model", html)
+        self.assertIn("Managed by source", html)
+        self.assertNotIn(f'name="resource_id" value="{source.source_id}:synthetic-model:high"', html)
+        self.plane.service_revoke_worker(worker_id)
+        status, html, _ = _form(self.port, "/admin/workers/delete", {"csrf": csrf, "worker_id": worker_id}, cookie)
+        self.assertEqual(409, status)
+        self.assertIn("references", html)
+
+    def test_source_guidance_states(self) -> None:
+        cases: tuple[tuple[dict[str, object], str], ...] = (
+            ({"connected": False}, "disconnected"),
+            ({"connected": True, "source_authenticated": "auth_required", "kind": "codex_subscription", "login_command": "supported-login"}, "supported-login"),
+            ({"connected": True, "source_authenticated": "unverified"}, "not been verified"),
+            ({"connected": True, "source_authenticated": "authenticated", "restricted": 1}, "restricted"),
+            ({"connected": True, "source_authenticated": "authenticated", "discovered": 1}, "not admitted"),
+            ({"connected": True, "source_authenticated": "authenticated", "observed_at": "time"}, "freshness is not established"),
+        )
+        for source, expected in cases:
+            with self.subTest(source=source):
+                self.assertIn(expected, _source_guidance(source))
 
     def test_provider_add_form_flow_and_redaction(self) -> None:
         cookie, csrf = self._session()

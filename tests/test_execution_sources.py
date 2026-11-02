@@ -155,7 +155,8 @@ class AdoptionTests(unittest.TestCase):
         self.assertEqual((), self.registry.derived_registrations())
         # And it stays visible in the source view.
         view = self.registry.source_view()[0]
-        self.assertEqual(1, view["errors"])
+        self.assertEqual(0, view["errors"])
+        self.assertEqual(1, view["discovered"])
 
     def test_ungranted_model_is_not_materialized_regardless_of_name(self) -> None:
         decisions = self._apply((_model("gpt-daybreak-blue-latest", ("high",)),))
@@ -163,7 +164,8 @@ class AdoptionTests(unittest.TestCase):
         self.assertEqual("model_not_allowed", decisions[0].reason)
         self.assertEqual((), self.registry.derived_registrations())
         view = self.registry.source_view()[0]
-        self.assertEqual(1, view["errors"])
+        self.assertEqual(0, view["errors"])
+        self.assertEqual(1, view["discovered"])
         self.assertEqual(0, view["routable"])
 
     def test_adoption_requires_an_authenticated_source(self) -> None:
