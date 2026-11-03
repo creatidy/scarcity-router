@@ -62,6 +62,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Concatenate, ParamSpec, TypeVar, cast
 from urllib.parse import parse_qsl
 
+_MI_VERIFY_PATH = "/v1/mi/verify-projection"
+
 if TYPE_CHECKING:
     from .mi_server_config import MIServer
 
@@ -974,7 +976,7 @@ class ControlPlane:
         _ = method
         if path == LIVENESS_PATH:
             return True
-        if path in (MACHINE_STATUS_PATH, MACHINE_SELECT_PATH, MACHINE_SIMULATE_PATH):
+        if path in (MACHINE_STATUS_PATH, MACHINE_SELECT_PATH, MACHINE_SIMULATE_PATH, _MI_VERIFY_PATH):
             return True
         if path == "/observer/v1" or path.startswith("/observer/v1/"):
             return True
@@ -996,7 +998,7 @@ class ControlPlane:
                     raise ControlHTTPError.method_not_allowed()
                 self._send_json(handler, 200, {"status": "ok"})
                 return
-            if path in (MACHINE_STATUS_PATH, MACHINE_SELECT_PATH, MACHINE_SIMULATE_PATH):
+            if path in (MACHINE_STATUS_PATH, MACHINE_SELECT_PATH, MACHINE_SIMULATE_PATH, _MI_VERIFY_PATH):
                 self._route_machine(method, path, handler)
                 return
             if path == "/observer/v1" or path.startswith("/observer/v1/"):
@@ -1392,6 +1394,25 @@ class ControlPlane:
         if method != "POST":
             raise ControlHTTPError.method_not_allowed()
         document = self._require_json_body(handler)
+        if path == _MI_VERIFY_PATH:
+            if set(document) != {"projection", "route", "decision", "mi_utilization"}:
+                raise ControlHTTPError.invalid_request("invalid verification request")
+            projection_value = document["projection"]
+            if not isinstance(projection_value, dict):
+                raise ControlHTTPError.invalid_request("invalid verification request")
+            projection = cast(dict[str, object], projection_value)
+            if (set(projection) != {"schema_version", "request_id"}
+                    or type(projection["schema_version"]) is not int or projection["schema_version"] != 1
+                    or not isinstance(projection["request_id"], str)):
+                raise ControlHTTPError.invalid_request("invalid verification request")
+            route_value = document["route"]
+            route = cast(dict[str, object], route_value) if isinstance(route_value, dict) else {}
+            valid = ("selection" in route and json.dumps(route["selection"], sort_keys=True, separators=(",", ":"), allow_nan=False)
+                     == json.dumps(document["decision"], sort_keys=True, separators=(",", ":"), allow_nan=False)
+                     and self._mi_server is not None and self._mi_server.verify_projection(
+                         client_id, projection["request_id"], route, document["mi_utilization"]))
+            self._send_json(handler, HTTPStatus.OK, {"schema_version": 1, "valid": valid})
+            return
         catalog, profiles, policy_version = load_configured_artifacts(
             self._catalog_path, self._model_policy_path
         )
@@ -1408,13 +1429,16 @@ class ControlPlane:
                     )
                 route_input = self._machine_route_request(parsed, client_id)
                 routed = route_request(route_input)
-                mi_reference = self._mi_server.retain(routed.mi_use) if self._mi_server is not None and routed.mi_use is not None else None
                 public_route = public_route_document(routed, route_input)
+                mi_reference = self._mi_server.retain(routed.mi_use) if self._mi_server is not None and routed.mi_use is not None else None
                 envelope = selection_envelope(routed.selection)
+                _ = envelope.pop("mi_receipt", None)
                 envelope["decision"] = public_route["selection"]
                 envelope["route"] = public_route
                 if mi_reference is not None:
                     envelope["mi_utilization"] = mi_reference
+                    assert self._mi_server is not None and routed.mi_use is not None
+                    envelope["mi_projection"] = self._mi_server.retain_projection(routed.mi_use, public_route, client_id)
                 self._send_json(handler, HTTPStatus.OK, envelope)
                 return
             parsed, overrides = parse_simulation_document(document)
