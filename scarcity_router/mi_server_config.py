@@ -11,6 +11,7 @@ import base64
 import hashlib
 import json
 import os
+import secrets
 import stat
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -18,13 +19,13 @@ from pathlib import Path
 from threading import RLock
 from typing import cast
 
-from model_intelligence.contract import Applicability
+from model_intelligence.contract import Applicability, decode_public_evidence
 from model_intelligence.evidence import Model
 from model_intelligence.publication import CutReference
 
-from .mi_consumer import MIAdmission, MIConsumer, MIUse, ModelBinding, canonical
-from .selection_types import ModelIdentity
-from .server_store import ServerStore
+from .mi_consumer import FrozenCut, MIAdmission, MIConsumer, MIUse, ModelBinding, canonical
+from .selection_types import EvidenceRef, ModelIdentity
+from .server_store import ServerStore, ServerStoreError
 
 _CONFIG_LIMIT = 256 * 1024
 
@@ -71,6 +72,12 @@ def _text(value: object) -> str:
     if not isinstance(value, str) or not value or len(value) > 1024:
         raise ValueError("invalid-text")
     return value
+
+
+def _encoded_bytes(value: object) -> bytes:
+    if not isinstance(value, str):
+        raise ValueError("invalid-encoded-bytes")
+    return base64.b64decode(value, validate=True)
 
 
 def _configuration(value: object) -> tuple[tuple[str, str | None], ...]:
@@ -167,6 +174,62 @@ class MIServer:
         })
         self.store.retain_mi_receipt(hashlib.sha256(use.utilization).hexdigest(), payload, cut_id, cut_data, request_id, client_id)
         return use.reference.to_dict()
+
+    def retain_projection(self, use: MIUse, route: dict[str, object], client_id: str) -> dict[str, object]:
+        """Bind a client-visible route to the immutable private utilization receipt."""
+        reference = self.retain(use)
+        request_id = secrets.token_hex(16)
+        payload = canonical({"schema_version": 1, "route": route, "mi_utilization": reference,
+                             "receipt_id": hashlib.sha256(use.utilization).hexdigest()})
+        self.store.retain_mi_receipt(hashlib.sha256(payload).hexdigest(), payload, None, None,
+                                     request_id, client_id)
+        return {"schema_version": 1, "request_id": request_id}
+
+    def verify_projection(self, client_id: str, request_id: str, route: object,
+                          reference: object) -> bool:
+        """Verify a stored projection and MI evidence without returning private material."""
+        try:
+            binding_id = self.store.get_mi_receipt_for_request(client_id, request_id)
+            if binding_id is None:
+                return False
+            binding_bytes = self.store.get_mi_receipt(binding_id)
+            if binding_bytes is None or hashlib.sha256(binding_bytes).hexdigest() != binding_id:
+                return False
+            binding = _object(cast(object, json.loads(binding_bytes)), frozenset({"schema_version", "route", "mi_utilization", "receipt_id"}))
+            if (type(binding["schema_version"]) is not int or binding["schema_version"] != 1
+                    or canonical(binding["route"]) != canonical(route)
+                    or canonical(binding["mi_utilization"]) != canonical(reference)):
+                return False
+            receipt_id = _text(binding["receipt_id"])
+            payload = self.store.get_mi_receipt(receipt_id)
+            if payload is None:
+                return False
+            retained = _object(cast(object, json.loads(payload)), frozenset({"cut_blob_sha256", "cut_reference", "evaluated_at", "context", "decision", "utilization"}))
+            utilization = _encoded_bytes(retained["utilization"])
+            if hashlib.sha256(utilization).hexdigest() != receipt_id:
+                return False
+            cut = None
+            if retained["cut_reference"] is not None:
+                ref = _object(retained["cut_reference"], frozenset({"format_version", "payload_schema", "sha256"}))
+                version = ref["format_version"]
+                if type(version) is not int:
+                    return False
+                cut_ref = CutReference(version, _text(ref["payload_schema"]), _text(ref["sha256"]))
+                cut_id = _text(retained["cut_blob_sha256"])
+                data = self.store.get_retained_mi_cut(cut_id)
+                if data is None or hashlib.sha256(data).hexdigest() != cut_id:
+                    return False
+                cut = FrozenCut(data, cut_ref, decode_public_evidence(data, cut_ref, max_bytes=len(data)))
+            elif retained["cut_blob_sha256"] is not None:
+                return False
+            decision = _encoded_bytes(retained["decision"])
+            use = MIUse(cut, datetime.fromisoformat(_text(retained["evaluated_at"])),
+                        _encoded_bytes(retained["context"]), decision,
+                        utilization, EvidenceRef.from_dict(reference))
+            _ = use.envelope(cast(dict[str, object], json.loads(decision)))
+            return True
+        except (ValueError, TypeError, KeyError, OverflowError, RecursionError, ServerStoreError):
+            return False
 
 
 def load_mi_server_config(path: Path) -> MIServerConfig:

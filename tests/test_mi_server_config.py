@@ -135,6 +135,44 @@ class MIServerConfigTests(unittest.TestCase):
             self.assertIsNone(store.get_mi_receipt("3" * 64))
             self.assertIsNone(store.get_retained_mi_cut(hashlib.sha256(b"other-cut").hexdigest()))
 
+    def test_viable_routes_bind_authorized_projection_without_private_resources(self) -> None:
+        from scarcity_router.routing_core import ClientAuthorization, public_route_document, route_request
+        from tests.test_mi_admission import ActiveMIAdmissionTests
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            publication = directory / "publication.json"
+            _ = publication.write_bytes(fixture.encoded(fixture.public())[0])
+            path = directory / "trust.json"
+            _ = path.write_text(json.dumps(configuration(publication)))
+            store = ServerStore.open(directory / "state")
+            self.addCleanup(store.close)
+            server = load_mi_server_config(path).activate(store)
+            request, admission = ActiveMIAdmissionTests().world(amount=16000)
+            request = replace(request, mi_admission=admission)
+            unrestricted = route_request(request)
+            assert unrestricted.target is not None
+            preferred = unrestricted.target.resource.resource_id
+            restricted_request = replace(request, client_authorization=ClientAuthorization(blocked_resource_ids=(preferred,)))
+            restricted = route_request(restricted_request)
+            assert restricted.target is not None
+            self.assertNotEqual(preferred, restricted.target.resource.resource_id)
+            for client, route_input, decision in (("client-all", request, unrestricted), ("client-limited", restricted_request, restricted)):
+                assert decision.mi_use is not None
+                public = public_route_document(decision, route_input)
+                projection = server.retain_projection(decision.mi_use, public, client)
+                reference = decision.mi_use.reference.to_dict()
+                self.assertTrue(server.verify_projection(client, cast(str, projection["request_id"]), public, reference))
+                self.assertFalse(server.verify_projection("other-client", cast(str, projection["request_id"]), public, reference))
+                wrong_reference = {**reference, "identifier": "urn:mi:utilization:sha256:" + "0" * 64}
+                self.assertFalse(server.verify_projection(client, cast(str, projection["request_id"]), public, wrong_reference))
+                with mock.patch.object(store, "get_retained_mi_cut", return_value=b"wrong cut"):
+                    self.assertFalse(server.verify_projection(client, cast(str, projection["request_id"]), public, reference))
+                with mock.patch.object(store, "get_retained_mi_cut", return_value=None):
+                    self.assertFalse(server.verify_projection(client, cast(str, projection["request_id"]), public, reference))
+                if client == "client-limited":
+                    self.assertNotIn(preferred, canonical(public).decode())
+
 
 class MIServerHTTPTests(ServerHarness):
     @override
@@ -186,6 +224,63 @@ class MIServerHTTPTests(ServerHarness):
             expected_cut=cut_ref, evaluated_at=fixture.T, decision=decision,
             context=base64.b64decode(cast(str, retained["context"])), max_bytes=fixture.BOUND)
         self.assertNotIn("context", body)
+
+    def test_projection_verification_is_client_scoped_and_detects_changes(self) -> None:
+        self.onboard()
+        request: dict[str, object] = {"requirement": {"task_level": "L0", "capability_minima": {}, "hard_constraints": {}}}
+        headers = {"Authorization": f"Bearer {self.client_key}"}
+        status, response, _ = self.exchange("POST", "/v1/select", request, headers=headers, with_session=False)
+        self.assertEqual(200, status)
+        body = cast(dict[str, object], response)
+        verify = {"projection": body["mi_projection"], "route": body["route"], "decision": body["decision"],
+                  "mi_utilization": body["mi_utilization"]}
+        status, result, _ = self.exchange("POST", "/v1/mi/verify-projection", verify, headers=headers, with_session=False)
+        self.assertEqual((200, {"schema_version": 1, "valid": True}), (status, result))
+        changed = copy.deepcopy(verify)
+        cast(dict[str, object], changed["route"])["status"] = "changed"
+        status, result, _ = self.exchange("POST", "/v1/mi/verify-projection", changed, headers=headers, with_session=False)
+        self.assertEqual((200, {"schema_version": 1, "valid": False}), (status, result))
+        changed = copy.deepcopy(verify)
+        changed["decision"] = {}
+        status, result, _ = self.exchange("POST", "/v1/mi/verify-projection", changed, headers=headers, with_session=False)
+        self.assertEqual((200, {"schema_version": 1, "valid": False}), (status, result))
+        other = self.plane.service_issue_client_key({"label": "other"})
+        status, result, _ = self.exchange("POST", "/v1/mi/verify-projection", verify,
+                                          headers={"Authorization": f"Bearer {other['api_key']}"}, with_session=False)
+        self.assertEqual((200, {"schema_version": 1, "valid": False}), (status, result))
+
+    def test_viable_filtered_response_and_metadata_are_verifiable(self) -> None:
+        from scarcity_router.routing_core import ClientAuthorization, route_request
+        from tests.test_mi_admission import ActiveMIAdmissionTests
+
+        self.onboard()
+        request, admission = ActiveMIAdmissionTests().world(amount=16000)
+        request = replace(request, mi_admission=admission)
+        preferred_decision = route_request(request)
+        assert preferred_decision.target is not None
+        preferred = preferred_decision.target.resource.resource_id
+        restricted = replace(request, client_authorization=ClientAuthorization(blocked_resource_ids=(preferred,)))
+        restricted_decision = route_request(restricted)
+        assert restricted_decision.target is not None
+        second = self.plane.service_issue_client_key({"label": "restricted"})
+        for key, route_input, hidden in ((self.client_key, request, None),
+                                         (cast(str, second["api_key"]), restricted, preferred)):
+            headers = {"Authorization": f"Bearer {key}"}
+            with mock.patch.object(self.plane, "_machine_route_request", return_value=route_input):
+                status, response, _ = self.exchange("POST", "/v1/select", {
+                    "requirement": {"task_level": "L0", "capability_minima": {}, "hard_constraints": {}}
+                }, headers=headers, with_session=False)
+            self.assertEqual(200, status)
+            body = cast(dict[str, object], response)
+            if hidden is not None:
+                self.assertNotIn(hidden, canonical(body).decode())
+            status, verified, _ = self.exchange("POST", "/v1/mi/verify-projection", {
+                "projection": body["mi_projection"], "decision": body["decision"],
+                "route": body["route"], "mi_utilization": body["mi_utilization"],
+            }, headers=headers, with_session=False)
+            self.assertEqual((200, {"schema_version": 1, "valid": True}), (status, verified))
+            if hidden is not None:
+                self.assertNotIn(hidden, canonical(verified).decode())
 
     def test_reload_requires_admin_and_preserves_captured_cut(self) -> None:
         self.onboard()

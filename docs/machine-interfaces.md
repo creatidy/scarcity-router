@@ -872,6 +872,18 @@ the utilization reference. The full MI decision, private routing context,
 manifest and content-addressed cut remain in the protected existing server
 store, not in the client response. They can be read by a trusted local store
 caller using `get_mi_receipt` and `get_retained_mi_cut` for offline verification.
+For MI-backed `/v1/select`, `mi_projection` additionally contains schema version
+`1` and an opaque request ID. An authenticated inference client can POST
+`/v1/mi/verify-projection` with exactly `projection` (the returned
+`mi_projection`), `decision`, `route`, and `mi_utilization`. The response is
+`{"schema_version":1,"valid":true|false}`. Verification is scoped to the
+original client identity, compares the submitted decision with `route.selection`,
+compares the entire route and utilization reference with the retained projection,
+and validates the private MI receipt against its retained cut, context and time.
+It reveals no private decision or context. A positive result confirms the server
+retained that correspondence; it is not a signature, independent proof of
+authorization, a current admission or an assertion that historical MI facts remain
+fresh. Verify the complete returned route and decision, not a modified subset.
 For execution, `get_mi_receipt_for_request` links the existing audit client and request IDs
 to the retained receipt without exposing private context to the inference client.
 The retained artifacts share a 128 MiB hard bound and are not automatically
