@@ -1079,7 +1079,8 @@ class ControlPlane:
                 "Content-Security-Policy",
                 "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
             )
-            handler.send_header("Referrer-Policy", "no-referrer")
+            # no-referrer nulls Origin on ordinary HTML form POSTs (Fetch).
+            handler.send_header("Referrer-Policy", "same-origin")
             for cookie in cookies:
                 handler.send_header("Set-Cookie", cookie)
             handler.end_headers()

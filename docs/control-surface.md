@@ -413,7 +413,14 @@ with one-time reveal); diagnostics; copyable client configuration
 (base URL, alias names, key-referral — never a key itself). All dynamic
 values are HTML-escaped; responses carry `Cache-Control: no-store`,
 `X-Content-Type-Options: nosniff`, a `default-src 'none'` CSP and
-`Referrer-Policy: no-referrer`.
+`Referrer-Policy: same-origin` (D-087). Unlike `no-referrer`, this preserves
+the actual `Origin` on same-origin HTML form POSTs, so onboarding's exact
+non-null origin check works in ordinary browsers. Cross-origin requests send
+no `Referer`; same-origin requests may include the source URL's path and
+query. Claims, passwords, CSRF tokens and revealed credentials remain in
+POST bodies, HTML bodies or protected cookies, never URLs. Exact origin
+verification, CSRF checks, claim expiry/one-time use and session security
+are unchanged; `Origin: null` is still forbidden for onboarding.
 
 ## Diagnostics and `doctor`
 
