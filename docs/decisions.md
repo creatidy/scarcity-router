@@ -6878,3 +6878,23 @@ No MI/Kernel mutation, model inference, Daybreak, release or deployment is autho
   does not authorize review #11, raise the effective maximum, alter D-069A,
   authorize integration, or reset the ten consumed ordinals. Any review beyond
   #10 requires direct owner authority for that exact PR and finite maximum.
+
+## D-087: Browser-compatible administration referrer policy (#255, 2026-11-08)
+
+- **Status:** Owner-authorized correction of the confirmed first-administrator
+  browser defect; supersedes only the Web UI's documented `no-referrer` policy.
+- **Evidence:** `ControlPlane.send_html()` emitted `no-referrer` while
+  onboarding required one exact non-null `Origin`. The owner's Chrome HTML
+  form POST had `Origin: null` and `Sec-Fetch-Site: same-origin`. Fetch's
+  [append-request-Origin algorithm](https://fetch.spec.whatwg.org/#append-a-request-origin-header)
+  and [MDN](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Referrer-Policy#effect_on_the_origin_header)
+  specify this interaction for non-CORS form submissions.
+- **Decision:** Use `Referrer-Policy: same-origin` for administration HTML.
+  Preserve exact origin verification, rejection of null/missing/duplicate or
+  cross-origin origins, existing CSRF, claim issuance/expiry/atomic one-time
+  consumption, passwords, sessions, CSP and other security headers. No new
+  endpoint, JavaScript, browser exception or authentication mechanism.
+- **Privacy:** Cross-origin `Referer` disclosure remains suppressed.
+  Same-origin requests may now carry the source path/query to the same server;
+  credentials and CSRF tokens must remain out of URLs and logs under D-044.
+  Referrer metadata is not authentication or bootstrap authority.

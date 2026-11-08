@@ -15,6 +15,7 @@ import unittest
 import urllib.parse
 from dataclasses import replace
 
+from scarcity_router.control_api import SESSION_COOKIE_NAME
 from scarcity_router.model_inventory import DiscoveredModel, ModelInventoryReport, SourceInventory
 from scarcity_router.server_ui import _source_guidance  # pyright: ignore[reportPrivateUsage]
 
@@ -81,6 +82,81 @@ def _csrf_of(html: str) -> str:
 
 
 class OnboardingFlowTests(ServerHarness):
+    def test_html_policy_preserves_same_origin_forms_and_security_headers(self) -> None:
+        for path in ("/admin/onboarding", "/admin/login", "/admin/providers"):
+            if path == "/admin/login":
+                self.onboard(login=False)
+            with self.subTest(path=path):
+                status, html, headers = _get(
+                    self.port, path, f"{SESSION_COOKIE_NAME}={self.cookie}" if self.cookie else None
+                )
+                self.assertEqual(200, status)
+                self.assertEqual(["same-origin"], [v for n, v in headers if n.lower() == "referrer-policy"])
+                self.assertEqual("no-store", dict(headers)["Cache-Control"])
+                self.assertEqual("nosniff", dict(headers)["X-Content-Type-Options"])
+                self.assertEqual(
+                    "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+                    dict(headers)["Content-Security-Policy"],
+                )
+                self.assertNotIn(FAKE_ADMIN_CLAIM, html)
+                self.assertNotIn(FAKE_ADMIN_PASSWORD, html)
+
+    def test_untrusted_origins_rejected_without_consuming_claim(self) -> None:
+        body = urllib.parse.urlencode({"claim": FAKE_ADMIN_CLAIM,
+            "password": FAKE_ADMIN_PASSWORD, "confirm": "yes"}).encode()
+        origin = f"http://127.0.0.1:{self.port}"
+        for origins in ((), ("null",), ("https://attacker.invalid",),
+                        (origin, origin), (origin, "https://attacker.invalid")):
+            with self.subTest(origins=origins):
+                connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
+                try:
+                    connection.putrequest("POST", "/admin/onboarding")
+                    connection.putheader("Content-Type", "application/x-www-form-urlencoded")
+                    connection.putheader("Content-Length", str(len(body)))
+                    connection.putheader("Sec-Fetch-Site", "same-origin")
+                    connection.putheader("Sec-Fetch-Mode", "navigate")
+                    for value in origins:
+                        connection.putheader("Origin", value)
+                    connection.endheaders(body)
+                    response = connection.getresponse()
+                    _ = response.read()
+                    self.assertEqual(403, response.status)
+                    self.assertIsNone(response.getheader("Set-Cookie"))
+                    self.assertFalse(self.plane.admin_configured())
+                finally:
+                    connection.close()
+        status, _, headers = _form(self.port, "/admin/onboarding",
+            {"password": FAKE_ADMIN_PASSWORD, "confirm": "yes"}, None)
+        self.assertEqual(303, status)
+        self.assertTrue(any(n.lower() == "set-cookie" for n, _ in headers))
+
+    def test_browser_style_onboarding_consumes_claim_once_and_creates_session(self) -> None:
+        origin = f"http://127.0.0.1:{self.port}"
+        body = urllib.parse.urlencode({"claim": FAKE_ADMIN_CLAIM,
+            "password": FAKE_ADMIN_PASSWORD, "confirm": "yes"}).encode()
+        headers = {"Content-Type": "application/x-www-form-urlencoded", "Origin": origin,
+                   "Referer": f"{origin}/admin/onboarding", "Sec-Fetch-Site": "same-origin",
+                   "Sec-Fetch-Mode": "navigate"}
+        status, _, response_headers = self.exchange("POST", "/admin/onboarding", raw_body=body, headers=headers)
+        self.assertEqual(303, status)
+        self.assertEqual("/admin", dict(response_headers)["Location"])
+        session = _UiSession()
+        session.adopt(response_headers)
+        self.assertIsNotNone(session.cookie)
+        self.assertIn("HttpOnly", dict(response_headers)["Set-Cookie"])
+        self.assertIn("SameSite=Strict", dict(response_headers)["Set-Cookie"])
+        status, html, _ = _get(self.port, "/admin", session.cookie)
+        self.assertEqual(200, status)
+        self.assertIn("Overview", html)
+        status, _, replay_headers = self.exchange("POST", "/admin/onboarding", raw_body=body, headers=headers)
+        self.assertEqual(303, status)
+        self.assertEqual("/admin/login", dict(replay_headers)["Location"])
+        self.assertFalse(any(n.lower() == "set-cookie" for n, _ in replay_headers))
+        status, _, replay_headers = self.exchange("POST", "/control/bootstrap/admin",
+            {"password": FAKE_ADMIN_PASSWORD, "confirm": True})
+        self.assertEqual(409, status)
+        self.assertFalse(any(n.lower() == "set-cookie" for n, _ in replay_headers))
+
     def test_first_run_identifies_same_store_requirement(self) -> None:
         status, html, _headers = _get(self.port, "/admin/onboarding", None)
         self.assertEqual(200, status)
