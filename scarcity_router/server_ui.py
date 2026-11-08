@@ -834,7 +834,7 @@ def _resources_connection_test(
             f"<div class=\"notice\">Connection test for "
             + f"<code>{_esc(resource_id)}</code>: <strong>"
             + f"{_esc(result.get('result'))}</strong>. "
-            + "No provider request was made; no inference quota was consumed."
+            + f"{_esc(result.get('note'))}. No inference quota was consumed."
             + "</div><table><tr><th>Check</th><th>Detail</th><th>Remediation</th></tr>"
             + checks
             + "</table>"

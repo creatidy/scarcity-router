@@ -1139,6 +1139,7 @@ class ControlPlane:
                 raise ControlHTTPError.invalid_request("incomplete request body")
             chunks.append(chunk)
             remaining -= len(chunk)
+        handler.request_body_consumed = True
         return b"".join(chunks)
 
     def _require_json_body(self, handler: GatewayRequestHandler) -> dict[str, object]:

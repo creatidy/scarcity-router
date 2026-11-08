@@ -10,7 +10,9 @@ Deterministic: synthetic collectors, injected clock, loopback listener.
 from __future__ import annotations
 
 import http.client
+import json
 import re
+import socket
 import unittest
 import urllib.parse
 from dataclasses import replace
@@ -19,6 +21,7 @@ from scarcity_router.control_api import SESSION_COOKIE_NAME
 from scarcity_router.model_inventory import DiscoveredModel, ModelInventoryReport, SourceInventory
 from scarcity_router.server_ui import _source_guidance  # pyright: ignore[reportPrivateUsage]
 
+from tests.openai_http_fixtures import ScriptedProviderServer
 from tests.server_fixtures import (
     FAKE_ADMIN_PASSWORD,
     FAKE_ADMIN_CLAIM,
@@ -232,6 +235,147 @@ class OnboardingFlowTests(ServerHarness):
         self.assertEqual(["/admin/login"], locations)
 
 
+class PersistentConnectionTests(ServerHarness):
+    def test_rejected_provider_form_does_not_corrupt_next_login_navigation(self) -> None:
+        self.onboard(login=False)
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        self.addCleanup(connection.close)
+        connection.request("GET", "/admin/login")
+        response = connection.getresponse()
+        self.assertEqual(200, response.status)
+        _ = response.read()
+        connection.request("POST", "/admin/providers/add", body="provider_id=synthetic",
+                           headers={"Content-Type": "application/x-www-form-urlencoded"})
+        response = connection.getresponse()
+        self.assertEqual(401, response.status)
+        _ = response.read()
+        rejected_headers = dict(response.getheaders())
+        # Reuse the browser-like client, which reconnects when told to close.
+        connection.request("GET", "/admin/login")
+        response = connection.getresponse()
+        self.assertEqual(200, response.status)
+        self.assertIn(b"Administrator password", response.read())
+        self.assertEqual("close", rejected_headers.get("Connection"))
+
+    def test_unread_bodies_are_never_dispatched_as_requests(self) -> None:
+        self.onboard()
+        cookie = f"{SESSION_COOKIE_NAME}={self.cookie}"
+        cases = (
+            ("POST", "/admin/providers/add", (), 401),
+            ("POST", "/admin/providers/add", (("Cookie", f"{SESSION_COOKIE_NAME}=synthetic-invalid"),), 401),
+            ("POST", "/admin/providers/add", (("Cookie", cookie), ("X-Scarcity-CSRF", "invalid")), 403),
+            ("POST", "/admin/logout", (), 303),
+            ("POST", "/admin/onboarding", (), 303),
+            ("POST", "/admin/unknown", (), 404),
+            ("POST", "/control/providers", (), 401),
+            ("POST", "/control/providers", (("Cookie", cookie),), 403),
+            ("POST", "/v1/select", (), 401),
+            ("POST", "/v1/select", (("Authorization", "Basic synthetic"),), 401),
+            ("POST", "/v1/select", (("Authorization", "Bearer synthetic-invalid"),), 401),
+            ("POST", "/v1/select", (("Authorization", "Bearer a"), ("Authorization", "Bearer b")), 401),
+            ("POST", "/v1/chat/completions", (), 401),
+            ("POST", "/v1/chat/completions", (("Authorization", "Basic synthetic"),), 401),
+            ("POST", "/v1/chat/completions", (("Authorization", "Bearer synthetic-invalid"),), 401),
+            ("POST", "/healthz", (), 405),
+            ("GET", "/healthz", (), 200),
+            ("GET", "/admin/login", (), 200),
+            ("POST", "/admin/providers/add", (("X-Scarcity-Router-Gateway", "synthetic"),), 400),
+        )
+        body = f"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\n\r\n".encode()
+        for method, path, headers, expected in cases:
+            with self.subTest(method=method, path=path, headers=headers):
+                with socket.create_connection(("127.0.0.1", self.port), timeout=5) as sock:
+                    request = (f"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\n"
+                               + f"Content-Length: {len(body)}\r\nContent-Type: application/json\r\n"
+                               + "".join(f"{name}: {value}\r\n" for name, value in headers)
+                               + "\r\n").encode()
+                    sock.sendall(request + body)
+                    response = http.client.HTTPResponse(sock)
+                    try:
+                        response.begin()
+                        self.assertEqual(expected, response.status)
+                        payload = response.read()
+                        self.assertEqual(str(len(payload)), response.getheader("Content-Length"))
+                        self.assertEqual("close", response.getheader("Connection"))
+                        self.assertNotIn(FAKE_ADMIN_PASSWORD.encode(), payload)
+                        self.assertEqual(b"", sock.recv(1))
+                    finally:
+                        response.close()
+
+    def test_rejection_does_not_wait_for_or_drain_body(self) -> None:
+        self.onboard(login=False)
+        for framing in ((), (("Content-Length", "1000000000"),),
+                        (("Content-Length", "invalid"),),
+                        (("Content-Length", "1"), ("Content-Length", "2")),
+                        (("Transfer-Encoding", "chunked"),)):
+            with self.subTest(framing=framing):
+                connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+                try:
+                    connection.putrequest("POST", "/admin/providers/add")
+                    for name, value in framing:
+                        connection.putheader(name, value)
+                    connection.endheaders()  # No body follows, even for the huge declared length.
+                    response = connection.getresponse()
+                    self.assertEqual(401, response.status)
+                    _ = response.read()
+                    self.assertEqual("close", response.getheader("Connection"))
+                finally:
+                    connection.close()
+
+    def test_consumed_form_and_bodyless_reads_keep_alive_then_reset_body_state(self) -> None:
+        self.onboard(login=False)
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        self.addCleanup(connection.close)
+        connection.request("POST", "/admin/login",
+                           body=urllib.parse.urlencode({"password": FAKE_ADMIN_PASSWORD}),
+                           headers={"Content-Type": "application/x-www-form-urlencoded"})
+        response = connection.getresponse()
+        self.assertEqual(303, response.status)
+        _ = response.read()
+        self.assertFalse(response.will_close)
+        original_socket = connection.sock
+        self.assertIsNotNone(original_socket)
+        for _ in range(2):
+            connection.request("GET", "/admin/login")
+            response = connection.getresponse()
+            self.assertEqual(200, response.status)
+            _ = response.read()
+            self.assertFalse(response.will_close)
+            self.assertIs(original_socket, connection.sock)
+        connection.request("POST", "/admin/providers/add", body="provider_id=synthetic",
+                           headers={"Content-Type": "application/x-www-form-urlencoded"})
+        response = connection.getresponse()
+        self.assertEqual(401, response.status)
+        _ = response.read()
+        self.assertTrue(response.will_close)
+
+    def test_consumed_control_and_gateway_json_preserve_keep_alive(self) -> None:
+        self.onboard()
+        cases: tuple[tuple[str, str, dict[str, str], int], ...] = (
+            ("/control/session", json.dumps({"password": FAKE_ADMIN_PASSWORD}), {}, 200),
+            ("/v1/chat/completions", "{}", {"Authorization": f"Bearer {self.client_key}"}, 400),
+        )
+        for path, body, headers, expected in cases:
+            with self.subTest(path=path):
+                connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+                try:
+                    connection.request("POST", path, body=body,
+                                       headers={"Content-Type": "application/json", **headers})
+                    response = connection.getresponse()
+                    self.assertEqual(expected, response.status)
+                    _ = response.read()
+                    self.assertFalse(response.will_close)
+                    original_socket = connection.sock
+                    self.assertIsNotNone(original_socket)
+                    connection.request("GET", "/healthz")
+                    response = connection.getresponse()
+                    self.assertEqual(200, response.status)
+                    _ = response.read()
+                    self.assertIs(original_socket, connection.sock)
+                finally:
+                    connection.close()
+
+
 class UiMutationFlowTests(ServerHarness):
     def _session(self) -> tuple[str, str]:
         self.onboard(login=False)
@@ -388,6 +532,52 @@ class UiMutationFlowTests(ServerHarness):
         self.assertIn("zai-plan-1", html)
         self.assertIn("authenticated", html)
         self.assertIn("protocol_compatible", html)
+
+    def test_connection_test_reports_actual_quota_free_health_probe(self) -> None:
+        cookie, csrf = self._session()
+        provider = ScriptedProviderServer()
+        provider.start()
+        self.addCleanup(provider.stop)
+        _ = self.plane.service_add_provider({"provider_id": "local", "adapter_id": "ollama",
+                                             "base_url": provider.origin})
+        _ = self.plane.service_add_resource(resource_document(
+            "local-model", provider="ollama", model="synthetic", entitlement="local_ungated",
+            endpoint_id="local",
+        ))
+        for document, expected in (({"version": "0.33.1"}, "backend version 0.33.1"),
+                                   ({}, "health body carries no version")):
+            with self.subTest(document=document):
+                provider.enqueue_json(document=document)
+                status, html, _ = _form(self.port, "/admin/resources/connection-test",
+                    {"csrf": csrf, "resource_id": "local-model"}, cookie)
+                self.assertEqual(200, status)
+                self.assertIn(expected, html)
+                self.assertIn("read-only health probe", html)
+                self.assertIn("never an inference request", html)
+                self.assertIn("no inference quota was consumed", html.lower())
+                self.assertNotIn("no provider request was made", html.lower())
+        self.assertEqual([("GET", "/api/version"), ("GET", "/api/version")],
+                         [(request.method, request.path) for request in provider.requests])
+
+    def test_connection_test_reports_configuration_only_when_no_probe_runs(self) -> None:
+        cookie, csrf = self._session()
+        provider = ScriptedProviderServer()
+        provider.start()
+        self.addCleanup(provider.stop)
+        _ = self.plane.service_add_provider({"provider_id": "local", "adapter_id": "ollama",
+                                             "base_url": provider.origin})
+        _ = self.plane.service_add_resource(resource_document(
+            "worker-model", channel="worker_bridged", provider="ollama", model="synthetic",
+            entitlement="local_ungated", endpoint_id="local",
+        ))
+        status, html, _ = _form(self.port, "/admin/resources/connection-test",
+            {"csrf": csrf, "resource_id": "worker-model"}, cookie)
+        self.assertEqual(200, status)
+        self.assertIn("configuration-level test only", html)
+        self.assertIn("no provider request was made", html.lower())
+        self.assertIn("no inference quota was consumed", html.lower())
+        self.assertNotIn("read-only health probe", html)
+        self.assertEqual([], provider.requests)
 
     def test_client_issue_shows_key_exactly_once(self) -> None:
         cookie, csrf = self._session()
