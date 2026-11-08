@@ -43,6 +43,7 @@ import signal
 import sys
 import threading
 from collections.abc import Callable
+from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import cast
@@ -61,6 +62,7 @@ from .server_store import (
     ServerStoreError,
     default_server_data_dir,
 )
+from .server_ownership import ServerOwnership
 from .worker_endpoint import build_tls_context as build_worker_tls_context
 from .worker_protocol import WORKER_PROTOCOL_VERSION
 from .tls_reload import verified_server_context
@@ -209,6 +211,11 @@ def _import_client_keys(plane: ControlPlane, path: Path) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """Run the full server component until interrupted."""
+    with ExitStack() as ownership:
+        return _main(argv, ownership)
+
+
+def _main(argv: list[str] | None, ownership: ExitStack) -> int:
     parser = build_parser()
     arguments = cast("dict[str, object]", vars(parser.parse_args(argv)))
     host = arguments["host"]
@@ -294,9 +301,31 @@ def main(argv: list[str] | None = None) -> int:
     worker_listener = None
     worker_reaper: threading.Thread | None = None
     worker_reaper_stop = threading.Event()
-    startup_complete = False
+    def cleanup() -> None:
+        # Every resource is closed before server ownership, even if another
+        # cleanup fails or startup exits between binding and serve_forever.
+        with ExitStack() as resources:
+            if store is not None:
+                _ = resources.callback(store.close)
+            if plane is not None:
+                _ = resources.callback(plane.close_worker_store)
+                _ = resources.callback(plane.worker_endpoint.close_all_sessions)
+            if server is not None:
+                _ = resources.callback(server.server_close)
+            if worker_listener is not None:
+                _ = resources.callback(worker_listener.shutdown)
+            if worker_reaper is not None:
+                _ = resources.callback(worker_reaper.join, timeout=5)
+            worker_reaper_stop.set()
+
     try:
         data_dir = Path(data_dir_value)
+        instance = None
+        if not arguments["issue_bootstrap_claim"]:
+            instance = ServerOwnership(data_dir)
+            _ = ownership.callback(instance.close)
+            data_dir = instance.path
+        _ = ownership.callback(cleanup)
         store = ServerStore.open(data_dir)
         if arguments["issue_bootstrap_claim"]:
             claim = secrets.token_urlsafe(32)
@@ -316,6 +345,8 @@ def main(argv: list[str] | None = None) -> int:
             except ImportError:
                 raise ValueError("MI integration requires the optional mi extra") from None
             mi_server_config = load_mi_server_config(Path(mi_config))
+        if instance is not None:
+            instance.check_directory()
         plane = ControlPlane(
             store=store,
             own_origins=(f"http://{host}:{raw_port}", f"https://{host}:{raw_port}"),
@@ -369,24 +400,9 @@ def main(argv: list[str] | None = None) -> int:
                 daemon=True,
             )
             worker_reaper.start()
-        startup_complete = True
     except (ValueError, OSError, ServerStoreError) as exc:
         print(f"server: {exc}", file=sys.stderr)
         return 2
-    finally:
-        if not startup_complete:
-            worker_reaper_stop.set()
-            if worker_reaper is not None and worker_reaper.is_alive():
-                worker_reaper.join(timeout=5)
-            if worker_listener is not None:
-                worker_listener.shutdown()
-            if server is not None:
-                server.server_close()
-            if plane is not None:
-                plane.worker_endpoint.close_all_sessions()
-                plane.close_worker_store()
-            if store is not None:
-                store.close()
     assert server is not None and plane is not None and store is not None
     bound_host, bound_port = cast("tuple[str, int]", server.server_address)
     scheme = "https" if tls_context is not None else "http"
@@ -474,15 +490,6 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if reload_enabled:
             _ = signal.signal(signal.SIGHUP, cast("signal.Handlers", previous_hup))
-        worker_reaper_stop.set()
-        if worker_reaper is not None:
-            _ = worker_reaper.join(timeout=5)
-        if worker_listener is not None:
-            worker_listener.shutdown()
-        server.server_close()
-        plane.worker_endpoint.close_all_sessions()
-        plane.close_worker_store()
-        store.close()
     return 0
 
 

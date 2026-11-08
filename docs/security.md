@@ -327,6 +327,22 @@ network/storage service or authority to repair an unknown store. Concurrent sour
 changes produce a safe retry refusal, not an assumed coherent snapshot or a claim
 to control arbitrary cooperating external processes.
 
+### Active server ownership
+
+The composed server holds a separate OS ownership lock before opening its store
+or establishing a producer epoch (#253). POSIX uses `flock` on the verified,
+owned data-directory inode itself, not a replaceable lock-file entry. Directory
+aliases therefore contend on the same object. Windows reuses the native
+no-follow, pinned directory-handle chain with no delete sharing and a byte lock
+on the single-linked `.server-instance.lock` file. That non-secret file is never
+unlinked on release. Startup rechecks the directory identity before producer
+construction. Unsupported locks and unsafe writable directories fail closed.
+Ownership ends after server/store cleanup, or automatically on process death;
+no SQLite inode record lock, write transaction or recovery guard is held for
+the server lifetime. Short-lived claim issuance and ordinary store access do
+not acquire this lock. OS-level administrative mutation of a live data directory
+is not a supported store migration or ownership-transfer mechanism.
+
 ### Admission limits
 
 Enforced before any dispatch: request-body size, context/output size,

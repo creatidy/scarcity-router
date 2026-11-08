@@ -112,7 +112,14 @@ a new epoch: old event identities remain historical records, but a consumer
 resynchronizes rather than treating prior-epoch ephemeral observations as live.
 Configuration is reconstructed after restart; discovery, observations and
 worker connectivity are not reconstructed from event history. A single active
-producer owns an epoch; a newer process fences an older one. D-086 authorizes
+producer owns an epoch; superseded producer objects remain fenced. The composed
+server acquires exclusive data-directory ownership before opening the store or
+constructing a producer. A duplicate start, even on a different port or through
+a directory alias, refuses without advancing the active epoch or journal.
+Normal shutdown and process death release ownership automatically; a legitimate
+restart still creates a new epoch. The local `--issue-bootstrap-claim` operation
+does not acquire server ownership and remains usable while the server runs.
+D-086 authorizes
 the narrowly scoped observer HTTP contract below; downstream Console/CLI
 integration and installed/browser acceptance remain open.
 
