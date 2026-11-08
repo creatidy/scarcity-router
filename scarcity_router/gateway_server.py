@@ -293,6 +293,7 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
     connection: socket.socket
 
     close_connection: bool = True
+    request_body_consumed: bool = False
 
     _sse_committed: bool = False
     _responses_surface: bool = False
@@ -341,6 +342,21 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
         self.close_connection = True
         self._send_empty(HTTPStatus(int(code)))
 
+    @override
+    def send_response(self, code: int, message: str | None = None) -> None:
+        if code >= 200 and not self.close_connection and not self.request_body_consumed:
+            lengths = self.headers.get_all("Content-Length")
+            bodyless = (
+                lengths is None and self.command not in ("POST", "PUT", "PATCH")
+            ) or (lengths is not None and len(lengths) == 1 and lengths[0].strip(" \t") == "0")
+            if self.headers.get_all("Transfer-Encoding") or not bodyless:
+                # Never drain an early rejection or reuse its unread body as
+                # another request. This covers control/UI responses as well.
+                self.close_connection = True
+        super().send_response(code, message)
+        if self.close_connection:
+            self.send_header("Connection", "close")
+
     # ── Routing ───────────────────────────────────────────────────────────
 
     def do_GET(self) -> None:
@@ -365,6 +381,7 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
         self._dispatch("OPTIONS")
 
     def _dispatch(self, method: str) -> None:
+        self.request_body_consumed = False
         self._responses_surface = self.path.split("?", 1)[0].split("#", 1)[0] == "/v1/responses"
         self._responses_stream = None
         try:
@@ -681,6 +698,7 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
                 )
             chunks.append(chunk)
             remaining -= len(chunk)
+        self.request_body_consumed = True
         return b"".join(chunks)
 
     _MAX_DRAIN_BYTES: int = 4 * 1_048_576
