@@ -380,6 +380,8 @@ class _SetupDialog:
                 entry.configure(state=state)
         self._primary.configure(state=state)
         self._open_ui_button.configure(state=state)
+        if enabled:
+            self._sync_ollama_state()
 
     def _sync_ollama_state(self) -> None:
         enabled = bool(self._ollama_enabled.get())

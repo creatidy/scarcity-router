@@ -271,6 +271,49 @@ class SetupViewAdapterTests(unittest.TestCase):
             self.assertNotIn("tkinter", name)
             self.assertNotIn("tkinter.", name)
 
+    def test_ollama_fields_restore_checkbox_state_after_submission(self) -> None:
+        dialog_type = cast("type[object]", getattr(_load_setup_view_module(), "_SetupDialog"))
+        dialog = dialog_type.__new__(dialog_type)
+        flag = _FakeBoolean()
+        ui, resource, host, port, primary, open_ui = (_FakeWidget() for _ in range(6))
+        for name, value in (
+            ("_ollama_enabled", flag),
+            ("_ui_entry", ui),
+            ("_resource_entry", resource),
+            ("_host_entry", host),
+            ("_port_entry", port),
+            ("_primary", primary),
+            ("_open_ui_button", open_ui),
+        ):
+            setattr(dialog, name, value)
+        set_inputs_enabled = cast("Callable[[bool], None]", getattr(dialog, "_set_inputs_enabled"))
+
+        for enabled in (False, True):
+            with self.subTest(ollama_enabled=enabled):
+                flag.value = enabled
+                set_inputs_enabled(False)
+                self.assertEqual("disabled", resource.state)
+                set_inputs_enabled(True)
+                expected = "normal" if enabled else "disabled"
+                self.assertEqual(expected, resource.state)
+                self.assertEqual(expected, host.state)
+                self.assertEqual(expected, port.state)
+                self.assertEqual("normal", ui.state)
+
+
+class _FakeWidget:
+    state: str = ""
+
+    def configure(self, *, state: str) -> None:
+        self.state = state
+
+
+class _FakeBoolean:
+    value: bool = False
+
+    def get(self) -> bool:
+        return self.value
+
 
 def _load_setup_view_module() -> "_SetupViewModule":
     """Import the packaging-side setup dialog by file path (safe: the
