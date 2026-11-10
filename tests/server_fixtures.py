@@ -209,7 +209,7 @@ class ServerHarness(unittest.TestCase):
             control_plane=self.plane,
         )
         self.thread = threading.Thread(
-            target=self.server.serve_forever, daemon=True
+            target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
         )
         self.thread.start()
 

@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
 import signal
 import socket
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -20,9 +22,9 @@ import unittest
 import unittest.mock
 from collections import deque
 from collections.abc import Callable
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import closing, redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import cast, override
+from typing import ClassVar, cast, override
 
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
@@ -64,7 +66,10 @@ from scarcity_router.worker_endpoint import (  # noqa: E402
     WorkerDispatchError,
     WorkerEndpoint,
 )
-from scarcity_router.worker_identity_store import WorkerIdentityStore  # noqa: E402
+from scarcity_router.worker_identity_store import (  # noqa: E402
+    WorkerIdentityError,
+    WorkerIdentityStore,
+)
 from scarcity_router.worker_local_adapters import (  # noqa: E402
     LocalAdapterRegistry,
 )
@@ -115,6 +120,7 @@ class RuntimeWorld:
     """Endpoint + identity store + worker-local store + transports."""
 
     _tmp: tempfile.TemporaryDirectory[str]
+    identity_path: Path
     clock: MutableClock
     store: WorkerIdentityStore
     local_store: WorkerLocalStore
@@ -124,12 +130,20 @@ class RuntimeWorld:
     connect_count: int
     factory_calls: int
 
-    def __init__(self) -> None:
+    def __init__(self, templates: tuple[Path, Path] | None = None) -> None:
         tmp = tempfile.TemporaryDirectory[str]()
         self._tmp = tmp
+        self.identity_path = Path(tmp.name) / "identity/identities.db"
         self.clock = MutableClock()
+        if templates is not None:
+            for template, relative in zip(
+                templates, ("identity/identities.db", "local/worker-state.db"), strict=True
+            ):
+                destination = Path(tmp.name) / relative
+                destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                _ = shutil.copyfile(template, destination)
         self.store = WorkerIdentityStore(
-            f"{tmp.name}/identity/identities.db", clock=self.clock
+            self.identity_path, clock=self.clock
         )
         self.local_store = WorkerLocalStore(f"{tmp.name}/local/worker-state.db")
         # Administrator-simulated ownership (configuration is the only
@@ -308,11 +322,30 @@ class PairingRuntimeTests(unittest.TestCase):
 
 
 class RunLoopTests(unittest.TestCase):
+    templates: ClassVar[tuple[Path, Path]]
     world: RuntimeWorld
     adapter: SyntheticLocalAdapter
     registry: LocalAdapterRegistry
     worker_id: str
     credential: str
+
+    @classmethod
+    @override
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        directory = tempfile.TemporaryDirectory[str]()
+        cls.addClassCleanup(directory.cleanup)
+        identity = Path(directory.name) / "identity.db"
+        local = Path(directory.name) / "local.db"
+        store = WorkerIdentityStore(identity, clock=MutableClock())
+        store.close()
+        # Each clone needs its own salt; close SQLite before copying a WAL database.
+        with closing(sqlite3.connect(identity)) as connection:
+            _ = connection.execute("DELETE FROM store_meta WHERE key = 'salt'")
+            connection.commit()
+        local_store = WorkerLocalStore(local)
+        local_store.close()
+        cls.templates = identity, local
 
     def __init__(self, method_name: str = "runTest") -> None:
         super().__init__(method_name)
@@ -324,7 +357,7 @@ class RunLoopTests(unittest.TestCase):
 
     @override
     def setUp(self) -> None:
-        self.world = RuntimeWorld()
+        self.world = RuntimeWorld(self.templates)
         self.addCleanup(self.world.close)
         self.adapter = SyntheticLocalAdapter()
         self.registry = build_local_registry(adapter=self.adapter)
@@ -343,6 +376,23 @@ class RunLoopTests(unittest.TestCase):
         )
         # The administrator binds the pre-paired device to the resource.
         self.world.owners[RESOURCE_ID] = self.worker_id
+
+    def test_template_clones_are_isolated(self) -> None:
+        other = RuntimeWorld(self.templates)
+        self.addCleanup(other.close)
+        self.assertIsNone(other.local_store.load_identity())
+        with self.assertRaises(WorkerIdentityError):
+            _ = other.store.authenticate(self.worker_id, self.credential)
+        with (
+            closing(sqlite3.connect(self.world.identity_path)) as first,
+            closing(sqlite3.connect(other.identity_path)) as second,
+        ):
+            query = "SELECT value FROM store_meta WHERE key = 'salt'"
+            first_salt = cast("tuple[str] | None", first.execute(query).fetchone())
+            second_salt = cast("tuple[str] | None", second.execute(query).fetchone())
+            self.assertIsNotNone(first_salt)
+            self.assertIsNotNone(second_salt)
+            self.assertTrue(first_salt != second_salt, "each clone must generate a distinct salt")
 
     def _runtime(self) -> WorkerRuntime:
         return WorkerRuntime(
