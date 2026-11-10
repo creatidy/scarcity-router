@@ -53,7 +53,7 @@ jobs:
       - name: Repository validation gate (test + typecheck)
         # SR_TEST_TIMING=1 makes tools/test_runner.py append the slowest
         # tests and the total test wall time to this job's log (issue #111).
-        run: SR_TEST_TIMING=1 make check
+        run: SR_PARALLEL_WAIT_TESTS=1 SR_TEST_TIMING=1 make check
 
       - name: basedpyright (documented gate command)
         run: uv run basedpyright

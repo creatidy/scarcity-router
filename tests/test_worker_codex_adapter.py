@@ -333,7 +333,7 @@ class Harness:
         return None
 
 
-class CodexAdapterTests(unittest.TestCase):
+class CodexAdapterHarness(unittest.TestCase):
     _harnesses: list[Harness]
 
     def __init__(self, method_name: str = "runTest") -> None:
@@ -370,6 +370,8 @@ class CodexAdapterTests(unittest.TestCase):
         self._harnesses.append(harness)
         return harness
 
+
+class CodexAdapterTests(CodexAdapterHarness):
     # ── (2) version contract ───────────────────────────────────────────
 
     def test_supported_version_completes(self) -> None:
@@ -2228,7 +2230,7 @@ def _tool_scenario(**turn_extra: object) -> dict[str, object]:
     return {"init": "ok", "account": "chatgpt", "turn": turn}
 
 
-class CodexToolBridgeTests(CodexAdapterTests):
+class CodexToolBridgeTests(CodexAdapterHarness):
     """The D-062 suspension round trip at the adapter edge (fake server)."""
 
     def test_suspension_relays_and_answers_with_the_owner_mapping(self) -> None:
