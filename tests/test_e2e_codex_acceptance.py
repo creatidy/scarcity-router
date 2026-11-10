@@ -1259,9 +1259,15 @@ class ProductionCompatibilityMatrixTests(CodexComposedTlsWorld):
     def application_cells(self) -> tuple[CompatibilityCell, ...]:
         return self.plane.current_application().compatibility_cells
 
-    def test_codex_resource_gets_the_reviewed_m06_cells(self) -> None:
+    def test_codex_resource_gets_reviewed_m06_cells_and_provenance(self) -> None:
         worker = self.start_codex_worker(chatgpt_scenario())
         self.configure_codex_resource(worker.worker_id)
+        with self.subTest(check="cell values"):
+            self._assert_reviewed_m06_cell_values()
+        with self.subTest(check="cell provenance"):
+            self._assert_reviewed_m06_cell_provenance()
+
+    def _assert_reviewed_m06_cell_values(self) -> None:
         values = _cell_map(self.application_cells())
         for feature, (expected_value, _note, _date) in CODEX_WORKER_CELL_VALUES.items():
             key = ("worker_bridged", "openai", CODEX_CATALOG_MODEL, feature)
@@ -1280,9 +1286,7 @@ class ProductionCompatibilityMatrixTests(CodexComposedTlsWorld):
         }
         self.assertEqual(reviewed_features, present)
 
-    def test_m06_cells_carry_dated_provenance_and_adapter_identity(self) -> None:
-        worker = self.start_codex_worker(chatgpt_scenario())
-        self.configure_codex_resource(worker.worker_id)
+    def _assert_reviewed_m06_cell_provenance(self) -> None:
         codex_cells = [
             cell
             for cell in self.application_cells()

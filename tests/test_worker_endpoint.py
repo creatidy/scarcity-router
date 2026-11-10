@@ -161,7 +161,7 @@ class PairingEndpointTests(EndpointTestCase):
         assert isinstance(replay, ErrorMessage)
         self.assertEqual(ERR_PAIRING_USED, replay.code)
         self.assertTrue(replay.fatal)
-        _ = wait_until(lambda: not self.endpoint.connected_worker_ids())
+        self.assertIn(first.worker_id, self.endpoint.connected_worker_ids())
 
     def test_expired_code_is_a_typed_protocol_error(self) -> None:
         worker = self.connect_worker()
