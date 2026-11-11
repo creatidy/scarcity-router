@@ -529,6 +529,7 @@ def run_tray_worker(
     def request_quit() -> None:
         with runtime_lock:
             quit_event.set()
+            restart_requested.set()
             current = tuple(runtime_box)
         if on_quit is not None:
             on_quit()
@@ -551,13 +552,30 @@ def run_tray_worker(
     )
 
     def session_loop() -> None:
-        try:
-            if store_lifetime is None:
-                _session_loop()
-            else:
-                store_lifetime.run(_session_loop)
-        except Exception as unexpected:  # never leave the tray silently stuck
-            model.mark_error(f"internal error ({type(unexpected).__name__})")
+        def run() -> None:
+            while not quit_event.is_set():
+                try:
+                    _session_loop()
+                    return
+                except Exception as unexpected:  # never leave the tray silently stuck
+                    model.mark_error(f"internal error ({type(unexpected).__name__})")
+                    if not await_restart():
+                        return
+
+        if store_lifetime is None:
+            run()
+        else:
+            try:
+                store_lifetime.run(run)
+            except WorkerSetupConfigError:
+                if not quit_event.is_set():
+                    model.mark_error("worker session cancelled during shutdown")
+
+    def await_restart() -> bool:
+        if quit_event.is_set():
+            return False
+        _ = restart_requested.wait()
+        return not quit_event.is_set()
 
     def _session_loop() -> None:
         while not quit_event.is_set():
@@ -566,9 +584,13 @@ def run_tray_worker(
                 runtime = runtime_factory()
             except WorkerCaTrustError:
                 report_ca_error()
+                if await_restart():
+                    continue
                 return
             except Exception as exc:
                 model.mark_error(f"cannot start runtime ({type(exc).__name__})")
+                if await_restart():
+                    continue
                 return
             with runtime_lock:
                 quitting = quit_event.is_set()
@@ -588,17 +610,23 @@ def run_tray_worker(
                 report_ca_error()
                 write_log(runtime)
                 runtime_box.clear()
+                if await_restart():
+                    continue
                 return
             except Exception as exc:
                 model.mark_error(f"runtime failure ({type(exc).__name__})")
                 write_log(runtime)
                 runtime_box.clear()
+                if await_restart():
+                    continue
                 return
             write_log(runtime)
             runtime_box.clear()
             if reason == STOP_REQUESTED and not quit_event.is_set():
                 if restart_requested.is_set():
                     continue  # a fresh runtime: new connection, fresh budget
+                if await_restart():
+                    continue
                 return
             if reason == STOP_EXHAUSTED:
                 model.mark_disconnected(
@@ -606,6 +634,8 @@ def run_tray_worker(
                 )
             elif not quit_event.is_set():
                 model.mark_error(f"runtime stopped: {reason}")
+            if await_restart():
+                continue
             return
 
     session = threading.Thread(
@@ -1013,9 +1043,14 @@ def _open_settings_dialog(
             def save(fields: SetupFields) -> "worker_setup.WorkerLocalSettings":
                 def persist() -> worker_setup.WorkerLocalSettings:
                     try:
-                        return save_settings_fields(
+                        saved = save_settings_fields(
                             fields, store=store, begin_write=lifetime.begin_write
                         )
+                        if not _try_append_worker_log(
+                            diagnostics_dir, ("settings save committed",)
+                        ):
+                            lifetime.mark_log_failed()
+                        return saved
                     except Exception as exc:
                         if not _try_append_worker_log(
                             diagnostics_dir,
