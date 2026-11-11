@@ -55,10 +55,14 @@ a second control plane):
 from __future__ import annotations
 
 import queue
+import re
 import sys
 import threading
+import uuid
+from collections import OrderedDict, deque
 from collections.abc import Callable
 from concurrent.futures import Future
+from itertools import islice
 from pathlib import Path
 from typing import Protocol, TypeVar, runtime_checkable
 
@@ -213,6 +217,74 @@ class UiDispatcher:
             if task is None:
                 return
             task()
+
+
+class SettingsStoreLifetime:
+    """Fence late settings callbacks and defer store closure until users exit."""
+
+    def __init__(self, store: WorkerLocalStore) -> None:
+        self._store: WorkerLocalStore = store
+        self._lock: threading.Lock = threading.Lock()
+        self._idle: threading.Event = threading.Event()
+        self._idle.set()
+        self._active: int = 0
+        self._closing: bool = False
+        self._cancelled: bool = False
+        self._log_failed: bool = False
+        self._pending_saves: set[str] = set()
+
+    def save_started(self, save_id: str) -> None:
+        with self._lock:
+            self._pending_saves.add(save_id)
+
+    def save_finished(self, save_id: str) -> None:
+        with self._lock:
+            self._pending_saves.discard(save_id)
+
+    def pending_saves(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(sorted(self._pending_saves))
+
+    def mark_log_failed(self) -> None:
+        with self._lock:
+            self._log_failed = True
+
+    def log_failed(self) -> bool:
+        with self._lock:
+            return self._log_failed
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._cancelled = True
+
+    def begin_write(self) -> bool:
+        with self._lock:
+            return not self._cancelled
+
+    def run(self, action: Callable[[], _T]) -> _T:
+        with self._lock:
+            if self._closing:
+                raise WorkerSetupConfigError("settings save cancelled during shutdown")
+            self._active += 1
+            self._idle.clear()
+        try:
+            return action()
+        finally:
+            with self._lock:
+                self._active -= 1
+                if self._active == 0:
+                    if self._closing:
+                        self._store.close()
+                    self._idle.set()
+
+    def shutdown(self, *, timeout: float = 10.0) -> bool:
+        with self._lock:
+            self._closing = True
+            self._cancelled = True
+            if self._active == 0:
+                self._store.close()
+                return True
+        return self._idle.wait(timeout)
 
 
 def is_supported() -> bool:
@@ -392,17 +464,76 @@ def append_worker_log(state_dir: str | Path, lines: tuple[str, ...] | list[str])
     swallowed — diagnostics are best-effort and must never crash the
     worker.
     """
+    _ = _try_append_worker_log(state_dir, lines)
+
+
+_worker_log_lock = threading.Lock()
+_SAVE_CONFIRMED_PREFIXES = (
+    "settings save committed",
+    "settings save failed (",
+)
+_SAVE_UNCONFIRMED_PREFIXES = (
+    "settings dialog ended without confirmed result (",
+    "shutdown timed out; pending work is unconfirmed",
+)
+_SAVE_ID_PATTERN: re.Pattern[str] = re.compile(r"\b[0-9a-f]{32}\b")
+_SAVE_HISTORY_LIMIT = 32
+_SAVE_HISTORY_NOTICE = (
+    "settings save history is limited to the 32 most recently active attempts; "
+    "older outcomes may be absent\n"
+)
+
+
+def _try_append_worker_log(state_dir: str | Path, lines: tuple[str, ...] | list[str]) -> bool:
     if not lines:
-        return
+        return True
     log_path = Path(state_dir) / WORKER_LOG_NAME
+    if not _worker_log_lock.acquire(timeout=1):
+        return False
     try:
-        if log_path.exists() and log_path.stat().st_size > WORKER_LOG_MAX_BYTES:
-            log_path.unlink()
-        with log_path.open("a", encoding="utf-8") as handle:
-            for line in lines:
-                _ = handle.write(line.rstrip("\n") + "\n")
-    except OSError:
-        return
+        try:
+            if log_path.exists() and log_path.stat().st_size > WORKER_LOG_MAX_BYTES:
+                # Retain the latest result and warning per recent attempt, not
+                # merely the latest event. Legacy lines have no correlatable ID.
+                attempts: OrderedDict[str, dict[str, tuple[int, str]]] = OrderedDict()
+                legacy: deque[tuple[int, str]] = deque(maxlen=_SAVE_HISTORY_LIMIT * 2)
+                with log_path.open("r", encoding="utf-8", errors="replace") as handle:
+                    for index, line in enumerate(handle):
+                        if line.startswith(_SAVE_CONFIRMED_PREFIXES):
+                            kind = "confirmed"
+                        elif line.startswith(_SAVE_UNCONFIRMED_PREFIXES):
+                            kind = "unconfirmed"
+                        else:
+                            continue
+                        if len(line) > 1024:
+                            line = line[:500] + " ...[truncated]... " + line[-500:]
+                        matches = tuple(islice(_SAVE_ID_PATTERN.finditer(line), 10))
+                        if not matches:
+                            legacy.append((index, line))
+                            continue
+                        for match in matches:
+                            save_id = match.group()
+                            events = attempts.setdefault(save_id, {})
+                            events[kind] = (index, line)
+                            attempts.move_to_end(save_id)
+                            if len(attempts) > _SAVE_HISTORY_LIMIT:
+                                _ = attempts.popitem(last=False)
+                retained_lines = set(legacy)
+                for events in attempts.values():
+                    retained_lines.update(events.values())
+                with log_path.open("w", encoding="utf-8") as handle:
+                    if retained_lines:
+                        _ = handle.write(_SAVE_HISTORY_NOTICE)
+                    for _, retained in sorted(retained_lines):
+                        _ = handle.write(retained)
+            with log_path.open("a", encoding="utf-8") as handle:
+                for line in lines:
+                    _ = handle.write(line.rstrip("\n") + "\n")
+        except OSError:
+            return False
+    finally:
+        _worker_log_lock.release()
+    return True
 
 
 #: The duck-typed runtime surface the tray loop drives (satisfied by the
@@ -422,6 +553,8 @@ def run_tray_worker(
     state_dir: str | Path,
     worker_id: str | None,
     server_origin: str | None,
+    on_quit: Callable[[], None] | None = None,
+    store_lifetime: SettingsStoreLifetime | None = None,
 ) -> None:
     """Drive the tray worker: one reconnecting runtime plus the tray view.
 
@@ -444,6 +577,7 @@ def run_tray_worker(
     quit_event = threading.Event()
     restart_requested = threading.Event()
     runtime_box: list[TrayRuntime] = []
+    runtime_lock = threading.Lock()
 
     def write_log(runtime: TrayRuntime) -> None:
         append_worker_log(directory, runtime.diagnostics())
@@ -464,13 +598,20 @@ def run_tray_worker(
         runtime.request_stop()
 
     def request_quit() -> None:
-        quit_event.set()
-        for runtime in runtime_box:
+        with runtime_lock:
+            quit_event.set()
+            restart_requested.set()
+            current = tuple(runtime_box)
+        if on_quit is not None:
+            on_quit()
+        for runtime in current:
             request_stop(runtime)
 
     def request_restart() -> None:
-        restart_requested.set()
-        for runtime in runtime_box:
+        with runtime_lock:
+            restart_requested.set()
+            current = tuple(runtime_box)
+        for runtime in current:
             request_stop(runtime)
 
     model = TrayStateModel(
@@ -482,10 +623,30 @@ def run_tray_worker(
     )
 
     def session_loop() -> None:
-        try:
-            _session_loop()
-        except Exception as unexpected:  # never leave the tray silently stuck
-            model.mark_error(f"internal error ({type(unexpected).__name__})")
+        def run() -> None:
+            while not quit_event.is_set():
+                try:
+                    _session_loop()
+                    return
+                except Exception as unexpected:  # never leave the tray silently stuck
+                    model.mark_error(f"internal error ({type(unexpected).__name__})")
+                    if not await_restart():
+                        return
+
+        if store_lifetime is None:
+            run()
+        else:
+            try:
+                store_lifetime.run(run)
+            except WorkerSetupConfigError:
+                if not quit_event.is_set():
+                    model.mark_error("worker session cancelled during shutdown")
+
+    def await_restart() -> bool:
+        if quit_event.is_set():
+            return False
+        _ = restart_requested.wait()
+        return not quit_event.is_set()
 
     def _session_loop() -> None:
         while not quit_event.is_set():
@@ -494,11 +655,25 @@ def run_tray_worker(
                 runtime = runtime_factory()
             except WorkerCaTrustError:
                 report_ca_error()
+                if await_restart():
+                    continue
                 return
             except Exception as exc:
                 model.mark_error(f"cannot start runtime ({type(exc).__name__})")
+                if await_restart():
+                    continue
                 return
-            runtime_box[:] = [runtime]
+            with runtime_lock:
+                quitting = quit_event.is_set()
+                restarting = restart_requested.is_set()
+                if not quitting and not restarting:
+                    runtime_box[:] = [runtime]
+            if quitting:
+                request_stop(runtime)
+                return
+            if restarting:
+                request_stop(runtime)
+                continue
             model.mark_running()
             try:
                 reason: str = str(runtime.run())
@@ -506,17 +681,23 @@ def run_tray_worker(
                 report_ca_error()
                 write_log(runtime)
                 runtime_box.clear()
+                if await_restart():
+                    continue
                 return
             except Exception as exc:
                 model.mark_error(f"runtime failure ({type(exc).__name__})")
                 write_log(runtime)
                 runtime_box.clear()
+                if await_restart():
+                    continue
                 return
             write_log(runtime)
             runtime_box.clear()
             if reason == STOP_REQUESTED and not quit_event.is_set():
                 if restart_requested.is_set():
                     continue  # a fresh runtime: new connection, fresh budget
+                if await_restart():
+                    continue
                 return
             if reason == STOP_EXHAUSTED:
                 model.mark_disconnected(
@@ -524,6 +705,8 @@ def run_tray_worker(
                 )
             elif not quit_event.is_set():
                 model.mark_error(f"runtime stopped: {reason}")
+            if await_restart():
+                continue
             return
 
     session = threading.Thread(
@@ -706,6 +889,7 @@ def _tray_session_main(
             else WorkerOrigin.parse(str(server_origin))
         )
         store = open_worker_store(resolved_dir)
+        settings_lifetime = SettingsStoreLifetime(store)
         try:
             # The runtime and the settings dialog use the store for the
             # whole tray session, so it stays open until run_tray_worker
@@ -755,6 +939,8 @@ def _tray_session_main(
                     store,
                     worker_id or "",
                     origin_text,
+                    lifetime=settings_lifetime,
+                    diagnostics_dir=diagnostics_dir,
                     restart=restart_hook[0] if restart_hook else None,
                     settings_slot=settings_slot,
                 )
@@ -774,15 +960,35 @@ def _tray_session_main(
             factory: Callable[[], TrayRuntime] = (
                 runtime_factory if runtime_factory is not None else make_runtime
             )
+
+            def on_quit() -> None:
+                settings_lifetime.cancel()
+                dispatcher.close_request.set()
+
             run_tray_worker(
                 runtime_factory=factory,
                 view_factory=view_wrapper,
                 state_dir=diagnostics_dir,
                 worker_id=worker_id,
                 server_origin=origin_text,
+                on_quit=on_quit,
+                store_lifetime=settings_lifetime,
             )
         finally:
-            store.close()
+            _ = dispatcher.shutdown()
+            if not settings_lifetime.shutdown():
+                pending = settings_lifetime.pending_saves()
+                # A runtime may be pending without any settings save.
+                suffix = f"; pending save IDs: {', '.join(pending[:10])}" if pending else ""
+                if len(pending) > 10:
+                    suffix += f"; {len(pending) - 10} further save(s) not listed"
+                if not _try_append_worker_log(
+                    diagnostics_dir,
+                    ("shutdown timed out; pending work is unconfirmed and settings may not persist" + suffix,),
+                ):
+                    settings_lifetime.mark_log_failed()
+        if settings_lifetime.log_failed():
+            return 2
     except (WorkerConfigError, ValueError, OSError, TrayNotAvailableError) as exc:
         _pre_tray_error(str(exc))
         return 2
@@ -860,6 +1066,8 @@ def _open_settings_dialog(
     worker_id: str,
     origin_text: str,
     *,
+    lifetime: SettingsStoreLifetime,
+    diagnostics_dir: Path,
     restart: Callable[[], None] | None,
     settings_slot: threading.Semaphore,
 ) -> None:
@@ -890,6 +1098,8 @@ def _open_settings_dialog(
 
     def task() -> None:
         saved: worker_setup.WorkerLocalSettings | None = None
+        save_lock = threading.Lock()
+        latest_save: list[str] = []
         try:
             view = setup_view_factory()
             if isinstance(view, ClosableView):
@@ -909,17 +1119,58 @@ def _open_settings_dialog(
             )
 
             def save(fields: SetupFields) -> "worker_setup.WorkerLocalSettings":
-                return save_settings_fields(fields, store=store)
+                save_id = uuid.uuid4().hex
+                with save_lock:
+                    latest_save[:] = [save_id]
+
+                def persist() -> worker_setup.WorkerLocalSettings:
+                    lifetime.save_started(save_id)
+                    try:
+                        saved = save_settings_fields(
+                            fields, store=store, begin_write=lifetime.begin_write
+                        )
+                        if not _try_append_worker_log(
+                            diagnostics_dir, (f"settings save committed [save {save_id}]",)
+                        ):
+                            lifetime.mark_log_failed()
+                        return saved
+                    except Exception as exc:
+                        if not _try_append_worker_log(
+                            diagnostics_dir,
+                            (f"settings save failed ({type(exc).__name__}) [save {save_id}]",),
+                        ):
+                            lifetime.mark_log_failed()
+                        raise
+                    finally:
+                        lifetime.save_finished(save_id)
+
+                return lifetime.run(persist)
 
             saved = view.run_settings(context, save)
-        except Exception:  # noqa: BLE001 - a dialog failure never kills the tray
+        except Exception as exc:  # a dialog failure never kills the tray
+            with save_lock:
+                save_suffix = f" [last save {latest_save[0]}]" if latest_save else " [no save started]"
+            if not _try_append_worker_log(
+                diagnostics_dir,
+                (f"settings dialog ended without confirmed result ({type(exc).__name__}){save_suffix}",),
+            ):
+                lifetime.mark_log_failed()
             return
         finally:
             settings_slot.release()
-        if saved is not None and restart is not None:
+        if saved is not None and restart is not None and not dispatcher.close_request.is_set():
             restart()
 
-    _ = dispatcher.submit(task)
+    def guarded_task() -> None:
+        try:
+            lifetime.run(task)
+        except WorkerSetupConfigError:
+            settings_slot.release()
+
+    try:
+        _ = dispatcher.submit(guarded_task)
+    except RuntimeError:
+        settings_slot.release()
 
 
 def _run_first_run(

@@ -229,10 +229,18 @@ def load_worker_settings(store: WorkerLocalStore) -> WorkerLocalSettings | None:
     return settings_from_json(raw)
 
 
-def save_worker_settings(store: WorkerLocalStore, settings: WorkerLocalSettings) -> None:
+def save_worker_settings(
+    store: WorkerLocalStore,
+    settings: WorkerLocalSettings,
+    *,
+    begin_write: Callable[[], bool] | None = None,
+) -> None:
     """Persist the settings atomically (one SQLite row replacement)."""
     try:
-        _ = store.save_value(SETTINGS_STORE_KEY, settings_to_json(settings))
+        if begin_write is None:
+            store.save_value(SETTINGS_STORE_KEY, settings_to_json(settings))
+        else:
+            store.save_value(SETTINGS_STORE_KEY, settings_to_json(settings), begin_write=begin_write)
     except (sqlite3.Error, OSError, ValueError) as exc:
         raise WorkerSetupConfigError(
             "the local settings could not be saved; the worker state "
@@ -532,7 +540,9 @@ def complete_setup(
 # ── Settings-dialog save (paired mode) ────────────────────────────────────────
 
 
-def save_settings_fields(fields: SetupFields, *, store: WorkerLocalStore) -> WorkerLocalSettings:
+def save_settings_fields(
+    fields: SetupFields, *, store: WorkerLocalStore, begin_write: Callable[[], bool] | None = None
+) -> WorkerLocalSettings:
     """Validate settings-mode fields and persist them (paired worker).
 
     This is the settings dialog's whole write path — the same typed
@@ -541,7 +551,7 @@ def save_settings_fields(fields: SetupFields, *, store: WorkerLocalStore) -> Wor
     invalid input or a failed save (the dialog stays open).
     """
     settings = settings_from_fields(fields)
-    save_worker_settings(store, settings)
+    save_worker_settings(store, settings, begin_write=begin_write)
     return settings
 
 

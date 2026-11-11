@@ -211,10 +211,12 @@ class SettingsSaveFailureStore(WorkerLocalStore):
     """A store whose settings value cannot be written (identity can)."""
 
     @override
-    def save_value(self, key: str, value: str) -> None:
+    def save_value(
+        self, key: str, value: str, *, begin_write: Callable[[], bool] | None = None
+    ) -> None:
         if key == worker_setup.SETTINGS_STORE_KEY:
             raise OSError("synthetic settings save failure")
-        _ = super().save_value(key, value)
+        _ = super().save_value(key, value, begin_write=begin_write)
 
 
 class FakeRuntime:

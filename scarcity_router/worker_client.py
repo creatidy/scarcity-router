@@ -685,11 +685,13 @@ class WorkerRuntime:
 
     def _run_session(self, transport: FrameTransport, identity: WorkerLocalIdentity) -> str:
         """One connection's session; returns why it ended."""
-        sender = _FrameSender(transport)
+        sender = _FrameSender(transport, self._stop_event)
         reader = FrameReader(transport)
         # Registered so request_stop can close the transport and unblock a
         # read parked in recv (deterministic stop, never timeout-based).
         with self._session_lock:
+            if self._stop_event.is_set():
+                return "stop"
             self._active_sender = sender
         try:
             result = self._session_body(sender, reader, identity)
@@ -794,17 +796,21 @@ class WorkerRuntimeError(Exception):
 class _FrameSender:
     """Thread-safe frame writer (chunks stream from adapter threads)."""
 
-    def __init__(self, transport: FrameTransport) -> None:
+    def __init__(self, transport: FrameTransport, stop_event: threading.Event) -> None:
         self._transport: FrameTransport = transport
         self._lock: threading.Lock = threading.Lock()
+        self._closed: threading.Event = threading.Event()
+        self._stop_event: threading.Event = stop_event
 
     def send(self, payload: Mapping[str, object]) -> None:
         with self._lock:
+            if self._closed.is_set() or self._stop_event.is_set():
+                raise ConnectionError("worker session closed")
             self._transport.send_all(encode_frame(payload))
 
     def close(self) -> None:
-        with self._lock:
-            self._transport.close()
+        self._closed.set()
+        self._transport.close()
 
 
 def ensure_reasoning_representable(
