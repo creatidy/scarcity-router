@@ -55,10 +55,13 @@ a second control plane):
 from __future__ import annotations
 
 import queue
+import re
 import sys
 import threading
+import uuid
 from collections.abc import Callable
 from concurrent.futures import Future
+from itertools import islice
 from pathlib import Path
 from typing import Protocol, TypeVar, runtime_checkable
 
@@ -227,6 +230,19 @@ class SettingsStoreLifetime:
         self._closing: bool = False
         self._cancelled: bool = False
         self._log_failed: bool = False
+        self._pending_saves: set[str] = set()
+
+    def save_started(self, save_id: str) -> None:
+        with self._lock:
+            self._pending_saves.add(save_id)
+
+    def save_finished(self, save_id: str) -> None:
+        with self._lock:
+            self._pending_saves.discard(save_id)
+
+    def pending_saves(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(sorted(self._pending_saves))
 
     def mark_log_failed(self) -> None:
         with self._lock:
@@ -451,12 +467,15 @@ def append_worker_log(state_dir: str | Path, lines: tuple[str, ...] | list[str])
 
 
 _worker_log_lock = threading.Lock()
-_SAVE_OUTCOME_PREFIXES = (
+_SAVE_CONFIRMED_PREFIXES = (
     "settings save committed",
     "settings save failed (",
+)
+_SAVE_UNCONFIRMED_PREFIXES = (
     "settings dialog ended without confirmed result (",
     "shutdown timed out; pending work is unconfirmed",
 )
+_SAVE_ID_PATTERN: re.Pattern[str] = re.compile(r"\b[0-9a-f]{32}\b")
 
 
 def _try_append_worker_log(state_dir: str | Path, lines: tuple[str, ...] | list[str]) -> bool:
@@ -468,13 +487,31 @@ def _try_append_worker_log(state_dir: str | Path, lines: tuple[str, ...] | list[
     try:
         try:
             if log_path.exists() and log_path.stat().st_size > WORKER_LOG_MAX_BYTES:
-                last_outcome = ""
+                last_confirmed: tuple[int, str] = (-1, "")
+                last_unconfirmed: tuple[int, str] = (-1, "")
                 with log_path.open("r", encoding="utf-8", errors="replace") as handle:
-                    for line in handle:
-                        if line.startswith(_SAVE_OUTCOME_PREFIXES):
-                            last_outcome = line
+                    for index, line in enumerate(handle):
+                        if line.startswith(_SAVE_CONFIRMED_PREFIXES):
+                            last_confirmed = (index, line)
+                        elif line.startswith(_SAVE_UNCONFIRMED_PREFIXES):
+                            last_unconfirmed = (index, line)
+                pending_ids = frozenset(
+                    match.group()
+                    for match in islice(_SAVE_ID_PATTERN.finditer(last_unconfirmed[1]), 10)
+                )
+                associated: dict[str, tuple[int, str]] = {}
+                if pending_ids:
+                    with log_path.open("r", encoding="utf-8", errors="replace") as handle:
+                        for index, line in enumerate(handle):
+                            if line.startswith(_SAVE_CONFIRMED_PREFIXES):
+                                for match in _SAVE_ID_PATTERN.finditer(line):
+                                    save_id = match.group()
+                                    if save_id in pending_ids:
+                                        associated[save_id] = (index, line)
+                retained_lines = {last_confirmed, last_unconfirmed, *associated.values()}
                 with log_path.open("w", encoding="utf-8") as handle:
-                    _ = handle.write(last_outcome)
+                    for _, retained in sorted(retained_lines):
+                        _ = handle.write(retained)
             with log_path.open("a", encoding="utf-8") as handle:
                 for line in lines:
                     _ = handle.write(line.rstrip("\n") + "\n")
@@ -926,9 +963,14 @@ def _tray_session_main(
         finally:
             _ = dispatcher.shutdown()
             if not settings_lifetime.shutdown():
+                pending = settings_lifetime.pending_saves()
+                # A runtime may be pending without any settings save.
+                suffix = f"; pending save IDs: {', '.join(pending[:10])}" if pending else ""
+                if len(pending) > 10:
+                    suffix += f"; {len(pending) - 10} further save(s) not listed"
                 if not _try_append_worker_log(
                     diagnostics_dir,
-                    ("shutdown timed out; pending work is unconfirmed and settings may not persist",),
+                    ("shutdown timed out; pending work is unconfirmed and settings may not persist" + suffix,),
                 ):
                     settings_lifetime.mark_log_failed()
         if settings_lifetime.log_failed():
@@ -1042,6 +1084,8 @@ def _open_settings_dialog(
 
     def task() -> None:
         saved: worker_setup.WorkerLocalSettings | None = None
+        save_lock = threading.Lock()
+        latest_save: list[str] = []
         try:
             view = setup_view_factory()
             if isinstance(view, ClosableView):
@@ -1061,31 +1105,40 @@ def _open_settings_dialog(
             )
 
             def save(fields: SetupFields) -> "worker_setup.WorkerLocalSettings":
+                save_id = uuid.uuid4().hex
+                with save_lock:
+                    latest_save[:] = [save_id]
+
                 def persist() -> worker_setup.WorkerLocalSettings:
+                    lifetime.save_started(save_id)
                     try:
                         saved = save_settings_fields(
                             fields, store=store, begin_write=lifetime.begin_write
                         )
                         if not _try_append_worker_log(
-                            diagnostics_dir, ("settings save committed",)
+                            diagnostics_dir, (f"settings save committed [save {save_id}]",)
                         ):
                             lifetime.mark_log_failed()
                         return saved
                     except Exception as exc:
                         if not _try_append_worker_log(
                             diagnostics_dir,
-                            (f"settings save failed ({type(exc).__name__})",),
+                            (f"settings save failed ({type(exc).__name__}) [save {save_id}]",),
                         ):
                             lifetime.mark_log_failed()
                         raise
+                    finally:
+                        lifetime.save_finished(save_id)
 
                 return lifetime.run(persist)
 
             saved = view.run_settings(context, save)
         except Exception as exc:  # a dialog failure never kills the tray
+            with save_lock:
+                save_suffix = f" [last save {latest_save[0]}]" if latest_save else " [no save started]"
             if not _try_append_worker_log(
                 diagnostics_dir,
-                (f"settings dialog ended without confirmed result ({type(exc).__name__})",),
+                (f"settings dialog ended without confirmed result ({type(exc).__name__}){save_suffix}",),
             ):
                 lifetime.mark_log_failed()
             return

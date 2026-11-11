@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import queue
+import re
 import subprocess
 import sys
 import tempfile
@@ -162,6 +163,77 @@ class PendingSaveTests(unittest.TestCase):
                     self.assertFalse(thread.is_alive())
                 text = (Path(parent) / windows_tray.WORKER_LOG_NAME).read_text()
                 self.assertIn(outcome, text)
+
+    def test_rotation_retains_confirmed_and_uncertain_results_with_order(self) -> None:
+        for outcome in ("settings save committed", "settings save failed (WorkerSetupConfigError)"):
+            for warning_first in (False, True):
+                with self.subTest(outcome=outcome, warning_first=warning_first), tempfile.TemporaryDirectory() as parent:
+                    confirmed = f"{outcome} [save first]"
+                    warning = "settings dialog ended without confirmed result (Error) [last save second]"
+                    lines = (warning, confirmed) if warning_first else (confirmed, warning)
+                    with patch.object(windows_tray, "WORKER_LOG_MAX_BYTES", 256):
+                        windows_tray.append_worker_log(parent, lines)
+                        for _ in range(3):
+                            windows_tray.append_worker_log(parent, ("x" * 300,))
+                            windows_tray.append_worker_log(parent, ("later diagnostics",))
+                        text = (Path(parent) / windows_tray.WORKER_LOG_NAME).read_text()
+                    self.assertIn(confirmed, text)
+                    self.assertIn(warning, text)
+                    self.assertEqual(warning_first, text.index(warning) < text.index(confirmed))
+
+    def test_dialog_correlates_successive_saves_and_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            store = open_store(parent)
+            lifetime = windows_tray.SettingsStoreLifetime(store)
+            dispatcher = windows_tray.UiDispatcher()
+            done = threading.Event()
+
+            class View:
+                def run_first_run(self, submit: Callable[[worker_setup.SetupFields], worker_setup.SetupOutcome]) -> None:
+                    _ = submit
+                    raise AssertionError("unexpected first run")
+
+                def run_settings(self, context: object, save: Callable[[worker_setup.SetupFields], worker_setup.WorkerLocalSettings]) -> None:
+                    _ = context
+                    _ = save(worker_setup.SetupFields(server_ui_url="http://127.0.0.1:43210"))
+                    _ = save(worker_setup.SetupFields(server_ui_url="http://127.0.0.1:43211"))
+                    done.set()
+                    raise RuntimeError("synthetic dialog failure")
+
+            windows_tray._open_settings_dialog(  # pyright: ignore[reportPrivateUsage] - exercise the dialog boundary
+                dispatcher, View, store, "worker", "srw://localhost:8790",
+                lifetime=lifetime, diagnostics_dir=Path(parent), restart=None,
+                settings_slot=threading.Semaphore(1),
+            )
+            self.assertTrue(done.wait(10))
+            self.assertTrue(dispatcher.shutdown())
+            self.assertTrue(lifetime.shutdown())
+            log = (Path(parent) / windows_tray.WORKER_LOG_NAME).read_text()
+            ids = re.findall(r"settings save committed \[save ([0-9a-f]{32})\]", log)
+            self.assertEqual(2, len(ids))
+            self.assertNotEqual(ids[0], ids[1])
+            self.assertIn(f"[last save {ids[1]}]", log)
+            with patch.object(windows_tray, "WORKER_LOG_MAX_BYTES", 128):
+                windows_tray.append_worker_log(parent, ("x" * 200,))
+                windows_tray.append_worker_log(parent, ("rotate",))
+            rotated = (Path(parent) / windows_tray.WORKER_LOG_NAME).read_text()
+            self.assertIn(f"settings save committed [save {ids[1]}]", rotated)
+            self.assertIn(f"[last save {ids[1]}]", rotated)
+
+    def test_rotation_keeps_warning_related_older_result_and_latest_result(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            first, second = "a" * 32, "b" * 32
+            old_result = f"settings save committed [save {first}]"
+            warning = f"settings dialog ended without confirmed result (Error) [last save {first}]"
+            latest_result = f"settings save failed (WorkerSetupConfigError) [save {second}]"
+            with patch.object(windows_tray, "WORKER_LOG_MAX_BYTES", 256):
+                windows_tray.append_worker_log(parent, (old_result, warning, latest_result))
+                for _ in range(2):
+                    windows_tray.append_worker_log(parent, ("x" * 300,))
+                    windows_tray.append_worker_log(parent, ("rotate",))
+            log = (Path(parent) / windows_tray.WORKER_LOG_NAME).read_text()
+            self.assertLess(log.index(old_result), log.index(warning))
+            self.assertLess(log.index(warning), log.index(latest_result))
 
     def test_save_restarts_after_terminal_state_and_during_transition(self) -> None:
         for mode in ("exhausted", "error", "transition"):
@@ -865,6 +937,10 @@ assert result == 0
             elif not finish_first:
                 self.assertIn("shutdown timed out; pending work is unconfirmed", log)
                 self.assertEqual(1, len(runtimes))
+                pending = re.search(r"pending save IDs: ([0-9a-f]{32})", log)
+                self.assertIsNotNone(pending)
+                assert pending is not None
+                self.assertIn(f"[save {pending.group(1)}]", log)
             else:
                 self.assertEqual(2, len(runtimes))
             if fail or not (commit_first or finish_first or commit_after_quit):
