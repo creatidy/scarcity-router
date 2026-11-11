@@ -59,6 +59,7 @@ import re
 import sys
 import threading
 import uuid
+from collections import OrderedDict, deque
 from collections.abc import Callable
 from concurrent.futures import Future
 from itertools import islice
@@ -476,6 +477,11 @@ _SAVE_UNCONFIRMED_PREFIXES = (
     "shutdown timed out; pending work is unconfirmed",
 )
 _SAVE_ID_PATTERN: re.Pattern[str] = re.compile(r"\b[0-9a-f]{32}\b")
+_SAVE_HISTORY_LIMIT = 32
+_SAVE_HISTORY_NOTICE = (
+    "settings save history is limited to the 32 most recently active attempts; "
+    "older outcomes may be absent\n"
+)
 
 
 def _try_append_worker_log(state_dir: str | Path, lines: tuple[str, ...] | list[str]) -> bool:
@@ -487,29 +493,36 @@ def _try_append_worker_log(state_dir: str | Path, lines: tuple[str, ...] | list[
     try:
         try:
             if log_path.exists() and log_path.stat().st_size > WORKER_LOG_MAX_BYTES:
-                last_confirmed: tuple[int, str] = (-1, "")
-                last_unconfirmed: tuple[int, str] = (-1, "")
+                # Retain the latest result and warning per recent attempt, not
+                # merely the latest event. Legacy lines have no correlatable ID.
+                attempts: OrderedDict[str, dict[str, tuple[int, str]]] = OrderedDict()
+                legacy: deque[tuple[int, str]] = deque(maxlen=_SAVE_HISTORY_LIMIT * 2)
                 with log_path.open("r", encoding="utf-8", errors="replace") as handle:
                     for index, line in enumerate(handle):
                         if line.startswith(_SAVE_CONFIRMED_PREFIXES):
-                            last_confirmed = (index, line)
+                            kind = "confirmed"
                         elif line.startswith(_SAVE_UNCONFIRMED_PREFIXES):
-                            last_unconfirmed = (index, line)
-                pending_ids = frozenset(
-                    match.group()
-                    for match in islice(_SAVE_ID_PATTERN.finditer(last_unconfirmed[1]), 10)
-                )
-                associated: dict[str, tuple[int, str]] = {}
-                if pending_ids:
-                    with log_path.open("r", encoding="utf-8", errors="replace") as handle:
-                        for index, line in enumerate(handle):
-                            if line.startswith(_SAVE_CONFIRMED_PREFIXES):
-                                for match in _SAVE_ID_PATTERN.finditer(line):
-                                    save_id = match.group()
-                                    if save_id in pending_ids:
-                                        associated[save_id] = (index, line)
-                retained_lines = {last_confirmed, last_unconfirmed, *associated.values()}
+                            kind = "unconfirmed"
+                        else:
+                            continue
+                        if len(line) > 1024:
+                            line = line[:500] + " ...[truncated]... " + line[-500:]
+                        matches = tuple(islice(_SAVE_ID_PATTERN.finditer(line), 10))
+                        if not matches:
+                            legacy.append((index, line))
+                            continue
+                        for match in matches:
+                            save_id = match.group()
+                            events = attempts.setdefault(save_id, {})
+                            events[kind] = (index, line)
+                            attempts.move_to_end(save_id)
+                            if len(attempts) > _SAVE_HISTORY_LIMIT:
+                                _ = attempts.popitem(last=False)
+                retained_lines = set(legacy)
+                for events in attempts.values():
+                    retained_lines.update(events.values())
                 with log_path.open("w", encoding="utf-8") as handle:
+                    _ = handle.write(_SAVE_HISTORY_NOTICE)
                     for _, retained in sorted(retained_lines):
                         _ = handle.write(retained)
             with log_path.open("a", encoding="utf-8") as handle:

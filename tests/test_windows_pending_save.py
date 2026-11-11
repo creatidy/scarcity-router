@@ -235,6 +235,55 @@ class PendingSaveTests(unittest.TestCase):
             self.assertLess(log.index(old_result), log.index(warning))
             self.assertLess(log.index(warning), log.index(latest_result))
 
+    def test_rotation_retains_recent_attempt_pairs_with_explicit_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            path = Path(parent) / windows_tray.WORKER_LOG_NAME
+            with patch.object(windows_tray, "WORKER_LOG_MAX_BYTES", 512):
+                for number in range(40):
+                    save_id = f"{number:032x}"
+                    warning = f"settings dialog ended without confirmed result (Error) [last save {save_id}]"
+                    result = f"settings save committed [save {save_id}]"
+                    windows_tray.append_worker_log(parent, (warning, result))
+                for _ in range(2):
+                    windows_tray.append_worker_log(parent, ("x" * 600,))
+                    windows_tray.append_worker_log(parent, ("rotate",))
+            log = path.read_text()
+            self.assertIn("history is limited to the 32 most recently active attempts", log)
+            for number in range(40):
+                save_id = f"{number:032x}"
+                warning = f"[last save {save_id}]"
+                result = f"[save {save_id}]"
+                if number < 8:
+                    self.assertNotIn(warning, log)
+                    self.assertNotIn(result, log)
+                else:
+                    self.assertIn(warning, log)
+                    self.assertIn(result, log)
+                    self.assertLess(log.index(warning), log.index(result))
+
+    def test_rotation_retains_successive_legacy_results(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            lines = ("settings save committed", "settings save failed (WorkerSetupConfigError)")
+            with patch.object(windows_tray, "WORKER_LOG_MAX_BYTES", 64):
+                windows_tray.append_worker_log(parent, lines)
+                windows_tray.append_worker_log(parent, ("x" * 100,))
+                windows_tray.append_worker_log(parent, ("rotate",))
+            log = (Path(parent) / windows_tray.WORKER_LOG_NAME).read_text()
+            for line in lines:
+                self.assertIn(line, log)
+
+    def test_rotation_bounds_oversized_retained_event(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            save_id = "a" * 32
+            warning = f"settings dialog ended without confirmed result ({'x' * 5000}) [last save {save_id}]"
+            with patch.object(windows_tray, "WORKER_LOG_MAX_BYTES", 256):
+                windows_tray.append_worker_log(parent, (warning,))
+                windows_tray.append_worker_log(parent, ("rotate",))
+            log = (Path(parent) / windows_tray.WORKER_LOG_NAME).read_text()
+            self.assertIn("[truncated]", log)
+            self.assertIn(f"[last save {save_id}]", log)
+            self.assertLess(len(log), 1200)
+
     def test_save_restarts_after_terminal_state_and_during_transition(self) -> None:
         for mode in ("exhausted", "error", "transition"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as parent:
