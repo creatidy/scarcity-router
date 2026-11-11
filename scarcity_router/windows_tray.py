@@ -225,6 +225,15 @@ class SettingsStoreLifetime:
         self._idle.set()
         self._active: int = 0
         self._closing: bool = False
+        self._cancelled: bool = False
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._cancelled = True
+
+    def begin_write(self) -> bool:
+        with self._lock:
+            return not self._cancelled
 
     def run(self, action: Callable[[], _T]) -> _T:
         with self._lock:
@@ -245,6 +254,7 @@ class SettingsStoreLifetime:
     def shutdown(self, *, timeout: float = 10.0) -> bool:
         with self._lock:
             self._closing = True
+            self._cancelled = True
             if self._active == 0:
                 self._store.close()
                 return True
@@ -459,6 +469,7 @@ def run_tray_worker(
     worker_id: str | None,
     server_origin: str | None,
     on_quit: Callable[[], None] | None = None,
+    store_lifetime: SettingsStoreLifetime | None = None,
 ) -> None:
     """Drive the tray worker: one reconnecting runtime plus the tray view.
 
@@ -522,7 +533,10 @@ def run_tray_worker(
 
     def session_loop() -> None:
         try:
-            _session_loop()
+            if store_lifetime is None:
+                _session_loop()
+            else:
+                store_lifetime.run(_session_loop)
         except Exception as unexpected:  # never leave the tray silently stuck
             model.mark_error(f"internal error ({type(unexpected).__name__})")
 
@@ -536,6 +550,9 @@ def run_tray_worker(
                 return
             except Exception as exc:
                 model.mark_error(f"cannot start runtime ({type(exc).__name__})")
+                return
+            if quit_event.is_set():
+                request_stop(runtime)
                 return
             runtime_box[:] = [runtime]
             model.mark_running()
@@ -816,18 +833,27 @@ def _tray_session_main(
             factory: Callable[[], TrayRuntime] = (
                 runtime_factory if runtime_factory is not None else make_runtime
             )
+
+            def on_quit() -> None:
+                settings_lifetime.cancel()
+                dispatcher.close_request.set()
+
             run_tray_worker(
                 runtime_factory=factory,
                 view_factory=view_wrapper,
                 state_dir=diagnostics_dir,
                 worker_id=worker_id,
                 server_origin=origin_text,
-                on_quit=dispatcher.close_request.set,
+                on_quit=on_quit,
+                store_lifetime=settings_lifetime,
             )
         finally:
             _ = dispatcher.shutdown()
             if not settings_lifetime.shutdown():
-                append_worker_log(diagnostics_dir, ("settings shutdown timed out; store close deferred",))
+                append_worker_log(
+                    diagnostics_dir,
+                    ("shutdown timed out; pending work is unconfirmed and settings may not persist",),
+                )
     except (WorkerConfigError, ValueError, OSError, TrayNotAvailableError) as exc:
         _pre_tray_error(str(exc))
         return 2
@@ -957,7 +983,11 @@ def _open_settings_dialog(
 
             def save(fields: SetupFields) -> "worker_setup.WorkerLocalSettings":
                 try:
-                    return lifetime.run(lambda: save_settings_fields(fields, store=store))
+                    return lifetime.run(
+                        lambda: save_settings_fields(
+                            fields, store=store, begin_write=lifetime.begin_write
+                        )
+                    )
                 except Exception as exc:
                     append_worker_log(
                         diagnostics_dir,

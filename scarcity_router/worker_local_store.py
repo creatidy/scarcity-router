@@ -445,7 +445,9 @@ class WorkerLocalStore:
         """
         return stored_ca_trust(self)
 
-    def save_value(self, key: str, value: str) -> None:
+    def save_value(
+        self, key: str, value: str, *, begin_write: Callable[[], bool] | None = None
+    ) -> None:
         checked_key = v_safe_id(key, "worker_state.key")
         if checked_key == "schema_version":
             raise ValueError("worker_local_store: schema_version is reserved")
@@ -458,6 +460,8 @@ class WorkerLocalStore:
             )
         _ = v_text(value, f"worker_state[{key}]", max_len=65536)
         with self._lock:
+            if begin_write is not None and not begin_write():
+                raise ValueError("worker local state write cancelled during shutdown")
             _ = self._connection.execute(
                 """
                 INSERT INTO worker_state (key, value, updated_at) VALUES (?, ?, ?)
