@@ -576,8 +576,9 @@ scarcity-router-worker run --allow-ollama --resource my-ollama   # debugging
 
 1. Unzip and double-click `scarcity-worker.exe`. An unpaired worker opens
    the compact **first-run setup dialog**: enter the worker server origin
-   (`srws://SERVER:8790`) and the one-time code (a button opens the
-   server web UI where codes are issued), and optionally tick
+   (`srw://127.0.0.1:8790` on the server host, or verified
+   `srws://SERVER:8790` for a networked server) and the one-time code (a
+   button opens the server web UI where codes are issued), and optionally tick
    "Enable local Ollama" (loopback only; a resource id is required).
    Pairing stores the identity locally and the tray starts.
 2. Later launches go straight to the tray. Pair-only is valid: a local

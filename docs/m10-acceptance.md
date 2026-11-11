@@ -85,7 +85,7 @@ source inspection; that inspection is not a claim about all external clients.
 | Linux/WSL Python install: `uv tool install scarcity-router` (post-PyPI), `pipx` alternative | contracted, not published | future contract in `docs/release-engineering.md`; today's working path is checkout/wheel install (`make install`) |
 | Linux worker background operation (systemd user service) | built/documented | `examples/scarcity-router-worker.service` with start/stop/status/logs recipes and `loginctl enable-linger`; commands verified against the real worker CLI. Superseded 2026-10-01 (issue #138, D-065): the supported path is the generated unit of `scarcity-router-worker service install` — this row records what M10 shipped |
 | Server container image | built/tested locally | `Dockerfile` (python:3.12-slim, multi-stage wheel build, non-root uid/gid 10001, `/data` volume, `HEALTHCHECK` on `/healthz`); verified live on this host (Docker 29.7.2): build, `/healthz` 200, healthy status, single process, restart persistence (second bootstrap 409), non-root user, verified-TLS bind 200 / wrong CA refused / plaintext refused |
-| Compose example | built/documented | `examples/docker-compose.yml` — loopback host-networking default, TLS/LAN variant using only real server flags |
+| Compose example | built/documented | `examples/docker-compose.yml` — ordinary single-host Compose networking with host-loopback port publication and explicit local-container HTTP; see PR #267 for its separate Docker Desktop/WSL evidence. Native Windows/macOS client acceptance remains unverified. |
 | GHCR image publication (`ghcr.io/creatidy/scarcity-router`, tags X.Y.Z/X.Y/latest) | workflow implemented, never executed | `.github/workflows/release.yml`: `build-server-image` (linux/amd64 build from the exact commit, offline label/platform verification, isolated read-only-container `/healthz` smoke with an ephemeral non-root tmpfs `/data` (uid/gid 10001, mode 0700), checksummed `server-image` artifact with provenance) + tag-gated `publish-ghcr` (`packages: write` only there, serialized by the `ghcr-publication` job concurrency group; checksum/labels/revision/platform re-verification before any registry contact, exact-diagnostic-only absence handling, immutable-version conflict refusal, moving aliases advanced only when missing or provably older-or-equal stable via their version label — newer stable aliases are never regressed — and unprovable metadata/pull failures closed before any push; exported temporary `DOCKER_CONFIG` `--password-stdin` login removed by a trap); pinned structurally by `tests/test_release_workflow.py` and behaviorally offline by `tests/test_ghcr_publish_guard.py`. No workflow run, no registry push, no published image — `EXTERNAL_RELEASE_GATE: LIVE_GHCR_PUBLICATION` |
 | Windows worker package (portable zip) | workflow seam | `.github/workflows/release.yml` `build-windows-worker` (windows-latest, exact tagged commit, PyInstaller one-dir, `scarcity-worker-X.Y.Z-windows-x64.zip`, checksummed in `SHA256SUMS`, attached to the release); spec shape verified statically (`tests/test_windows_packaging.py`) |
 | Windows worker MSIX (signed) | external gate | `EXTERNAL_RELEASE_GATE: WINDOWS_CODE_SIGNING` — fail-closed seam; no signature ever fabricated |
@@ -147,8 +147,8 @@ installs the default user policy; `scarcity-router-mcp` needs no flags.
 
 ### Server (container)
 
-1. `docker build -t scarcity-router .` (pre-release; post-release the image comes from GHCR by tag)
-2. `docker compose -f examples/docker-compose.yml up -d` (loopback default)
+1. `docker compose -f examples/docker-compose.yml up -d --build` (pre-release local build; post-release the image comes from GHCR by tag)
+2. Confirm the server is available at `http://127.0.0.1:8787/admin` on the host
 3. In a private terminal, issue a 15-minute claim against the running volume:
    `docker compose -f examples/docker-compose.yml exec scarcity-router python -m scarcity_router.control_server --data-dir /data --issue-bootstrap-claim`
 4. Open `http://127.0.0.1:8787/admin`, enter the claim and create the administrator password
@@ -163,25 +163,32 @@ part of the earlier measured walkthrough; the UI remains server-rendered HTML.
 
 Friction notes (measured, deliberate):
 
-- LAN/VPN exposure requires TLS certificates mounted into the container
-  and `--host 0.0.0.0` (D-044: no plaintext LAN). The mounted key must
-  be readable by the container's uid 10001 — the compose example
-  documents this; it is the single most likely first-run stumble.
-- Any Docker Desktop-backed engine — including Docker Desktop's WSL2
-  integration — does not share the host loopback, so the loopback default
-  requires the TLS variant there. On a WSL2 distro backed by Docker
-  Desktop, `network_mode: host` behaves like Docker Desktop (the server
-  did NOT surface on the WSL distro's own loopback; verified with
-  `curl` returning 000 on `127.0.0.1:8787`), not like a native Linux
-  engine where host networking shares the host namespace.
+- Native localhost and the supplied ordinary single-host Compose profile
+  need no certificates. Compose publishes both ports on host loopback; it
+  needs neither host networking nor Docker Desktop restarts or global setting
+  changes. Container loopback is not host loopback.
+- The Compose profile enables plaintext listeners inside its network. Other
+  containers on that network can reach them; authentication does not protect
+  credentials from a peer observing plaintext. Administrators are responsible
+  for changes to the supplied networking or port publication.
+- LAN, VPN and distributed deployments require verified TLS and
+  operator-managed certificates and routing. Mounted keys must be readable by
+  the container's uid 10001. See [security guidance](security.md#client-transport-tiers-d-056).
 - Changing the container's internal port also requires overriding the
   baked `HEALTHCHECK` (documented in the Dockerfile).
+
+Historical observation (2026-09-21): with the former `network_mode: host`
+configuration on a WSL2 distro backed by Docker Desktop, the server did not
+surface on the distro's loopback (`curl` returned 000 for `127.0.0.1:8787`).
+This is evidence for that older configuration only, not the current Compose
+profile. PR #267 records separate Docker Desktop/WSL testing of the latter;
+native Windows and macOS client acceptance remains unverified.
 
 ### Worker (Windows or Linux)
 
 1. Administrator: Workers page → issue one-time pairing code
 2. Worker host: install (`uv tool install`/`pipx`; Windows: unzip the release package)
-3. Pair — Linux/WSL: `scarcity-router-worker pair --server srws://HOST:8790 --code CODE` (redeemed over verified TLS); **Windows: double-click `scarcity-worker.exe` and enter the server origin + code in the first-run setup dialog** (or, from PowerShell/cmd: `scarcity-worker.exe pair --server srws://HOST:8790 --code CODE` — the packaged executable speaks the same pairing protocol path; no Python required)
+3. Pair from the server host using `srw://127.0.0.1:8790` for native localhost or the supplied Compose profile; for advanced networked deployments use `srws://HOST:8790` with verified TLS. Linux/WSL: `scarcity-router-worker pair --server ORIGIN --code CODE`. **Windows: double-click `scarcity-worker.exe` and enter the appropriate origin + code in the first-run setup dialog**, or use `scarcity-worker.exe pair --server ORIGIN --code CODE` from PowerShell/cmd. Host `127.0.0.1` does not refer to the host from another container.
 4. Enable local resources — Linux: `scarcity-router-worker run --allow-ollama --resource my-ollama`; **Windows: tick "Enable local Ollama" in the same dialog (loopback only) or later via the tray's "Worker settings..." action**, then start the executable
 5. Administrator: add a `worker_bridged` resource bound to that device
 
