@@ -16,7 +16,7 @@ help: ## list available targets
 codex-login: ## refresh the local worker's Codex credentials (official device-auth login for the source configured in the installed worker service; same command on every host)
 	uv run scarcity-router-worker codex-login
 
-check: test typecheck ## run the full gate (test + typecheck); must exit 0 before every commit/PR
+check: test typecheck ## run the full repository gate (test + typecheck)
 
 guardrails: ## M08 per-module gate (issue #93): frozen-interface guardrail + parity suite only
 	uv run python -m unittest discover -s tests -p "test_interfaces_guardrails.py"

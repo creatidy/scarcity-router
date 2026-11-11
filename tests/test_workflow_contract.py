@@ -310,6 +310,13 @@ class WorkflowContractTests(unittest.TestCase):
         validation = text(".kilo/rules/validation.md")
         for command in ("uv sync --only-dev", "make check", "uv run basedpyright", "git diff --check"):
             self.assertIn(command, validation)
+        for evidence in (
+            "exact committed source or explicitly identified merge tree",
+            "not a routine duplicate before every commit",
+            "cannot turn a missing CI result or platform-specific check into a claimed CI/platform PASS",
+            "complete, disjoint case identities including parameterized cases",
+        ):
+            self.assertIn(evidence, validation)
         self.assertIn("explicit `/loop`", text(".kilo/rules/20-forgejo-mcp.md"))
         self.assertIn("STOP_AND_ASK stops the whole invocation", text(".kilo/rules/30-implementation-discipline.md"))
 
@@ -464,7 +471,8 @@ class WorkflowContractTests(unittest.TestCase):
             "Only this explicit `/loop` authority permits merging",
             "re-fetch canonical PR metadata and current canonical develop",
             "approved HEAD/base exactly match current remote and local frozen objects",
-            "empty findings, clean checkout, successful required `make check`, open/unmerged PR and target develop",
+            "empty findings, clean checkout, successful required full-gate evidence for the actual CI checkout/explicit merge tree, open/unmerged PR and target develop",
+            "Verify all required CI steps and HEAD/base currentness; a badge alone is insufficient",
             "return to FINISH with the SAME counter",
             "Recheck selected issue authority/acceptance/gates/labels",
             "`forgejo-mcp_merge_pull_request`",

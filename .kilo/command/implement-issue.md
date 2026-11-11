@@ -28,8 +28,11 @@ the decision/blocker contract before returning control to the owner.
    they never authorize parallel mutation or replacement PRs.
 3. Implement only accepted scope; use reuse-first and product-boundary rules.
    Track short local progress when needed, excluded through .git/info/exclude.
-4. Run focused checks and final `make check`. Inspect intended diff/status/full
-   base delta for scope, secrets and local state. Diagnose failures before retry.
+4. Run focused checks under `.kilo/rules/validation.md`. Require the full gate
+   on the exact committed source/merge tree in canonical CI before integration;
+   use a local full run for diagnosis or when CI cannot provide a required proof.
+   Inspect intended diff/status/full base delta for scope, secrets and local state.
+   Diagnose failures before retry.
 5. Inspect recent commit style and stage explicit intended files. Make small,
    coherent, reviewable commits as needed, including remediation commits; commit
    count is not acceptance. Follow the history-safety rule in

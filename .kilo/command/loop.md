@@ -215,8 +215,9 @@ For the selected issue follow `.kilo/command/implement-issue.md` as though expli
 owner-selected. Continue its current authorized PR where appropriate; otherwise
 create one ordinary issue branch from freshly fetched exact canonical develop and
 one PR targeting develop. Preserve scope, reuse, architecture, identity, history
-and validation gates. Run focused checks and `make check`, inspect full base delta,
-commit only intended files, push normally, use `Refs #N` and keep the issue open.
+and validation gates. Run focused checks, inspect full base delta, commit only
+intended files, push normally, use `Refs #N` and keep the issue open. Require the
+full exact-source CI gate under `.kilo/rules/validation.md` before integration.
 Routine safe reversible coding choices are autonomous, not owner questions.
 
 ## FINISH
@@ -294,8 +295,10 @@ invalidates continuation; stop with evidence rather than merge. Otherwise
 re-fetch canonical PR metadata and current canonical develop through normal Git;
 verify approved HEAD/base exactly match current remote and local frozen objects,
 and ordinary correctness/security acceptance covers those same exact objects.
-Require empty findings, clean checkout, successful required `make check`, open/unmerged
-PR and target develop. A changed HEAD/base invalidates APPROVE: return to FINISH with
+Require empty findings, clean checkout, successful required full-gate evidence for
+the actual CI checkout/explicit merge tree, open/unmerged PR and target develop.
+Verify all required CI steps and HEAD/base currentness; a badge alone is insufficient.
+A changed HEAD/base invalidates APPROVE: return to FINISH with
 the SAME counter (or terminate at the bound); never merge stale approval.
 
 Use supported `forgejo-mcp_merge_pull_request` for this PR, style `merge` (preserve

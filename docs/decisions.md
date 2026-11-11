@@ -6898,3 +6898,32 @@ No MI/Kernel mutation, model inference, Daybreak, release or deployment is autho
   Same-origin requests may now carry the source path/query to the same server;
   credentials and CSRF tokens must remain out of URLs and logs under D-044.
   Referrer metadata is not authentication or bootstrap authority.
+
+## D-088: Test Evidence And CI Execution (Owner Direction, 2026-11-11)
+
+- **Status:** Owner-directed repository validation policy. Supersedes the
+  requirement for a routine full local gate before every commit or PR update;
+  it does not reduce required acceptance, security, native-platform, release,
+  review or exact-source evidence. Historical validation records are unchanged.
+- **Decision:** Run focused change-relevant checks locally; run the complete
+  required gate in canonical CI for the exact committed source or explicitly
+  identified merge tree before integration. Run a local full gate when needed
+  to diagnose failures or provide a required proof CI cannot produce. Do not
+  represent a local substitute as a CI pass or waive a missing platform proof.
+  Verify the CI checkout/tree, all required step results, and current HEAD/base;
+  a status badge alone is insufficient. Independent review evaluates exact-run
+  evidence and runs additional targeted checks when necessary, not a duplicate
+  full gate by default.
+- **Test design:** Avoid duplicate scenario executions unless the evidence
+  boundary differs; retain all assertions when consolidating true duplicates.
+  Define scenarios once where practical. Reuse artifacts only with verified
+  identity and provenance; never share mutable test state except as the subject
+  of a test. Prove process isolation before parallelizing. Any sharding must
+  check complete, disjoint case identities, including parameters. Installed
+  artifact tests verify origin in workers and representative child processes and
+  keep separate clean-runtime dependency proof.
+- **Evidence:** Measure wall-clock, phases, run/skip counts and runner conditions
+  before and after optimizations. Mark unavailable native, security, external or
+  failure-recovery evidence UNPROVED. Current workflow capabilities and gaps
+  must be checked rather than inferred from this policy; this decision does not
+  itself change CI, create an issue, or authorize release/deployment.
