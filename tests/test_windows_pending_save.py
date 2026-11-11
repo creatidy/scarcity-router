@@ -52,6 +52,90 @@ def _dialog_class() -> type[_Dialog]:
 
 
 class PendingSaveTests(unittest.TestCase):
+    def test_save_during_runtime_construction_restarts_with_new_settings(self) -> None:
+        ready, entered, release, restart_called, started, finished = (
+            threading.Event() for _ in range(6)
+        )
+        actions: dict[str, object] = {}
+        captured: list[worker_setup.WorkerLocalSettings | None] = []
+        runtimes: list[FakeRuntime] = []
+        result: queue.Queue[object] = queue.Queue()
+        original_restart = windows_tray.TrayStateModel.request_restart
+        old = worker_setup.WorkerLocalSettings(server_ui_url="http://127.0.0.1:43210")
+        new = worker_setup.WorkerLocalSettings(server_ui_url="http://127.0.0.1:43211")
+
+        def restart(model: windows_tray.TrayStateModel) -> None:
+            original_restart(model)
+            restart_called.set()
+
+        class View:
+            def arm_close_request(self, event: threading.Event) -> None:
+                _ = event
+
+            def run_first_run(self, submit: object) -> None:
+                _ = submit
+                raise AssertionError("unexpected first run")
+
+            def run_settings(self, context: object, save: Callable[[worker_setup.SetupFields], worker_setup.WorkerLocalSettings]) -> worker_setup.WorkerLocalSettings:
+                _ = context
+                return save(worker_setup.SetupFields(server_ui_url="http://127.0.0.1:43211"))
+
+        def factory(model: windows_tray.TrayStateModel, opener: Callable[[], None], directory: Path, on_settings: Callable[[], None]) -> RecordingView:
+            view = recording_view_factory(RecordingView(), actions)(model, opener, directory, on_settings)
+            ready.set()
+            return view
+
+        with tempfile.TemporaryDirectory() as parent:
+            store = open_store(parent)
+            store.save_identity(synthetic_identity())
+            worker_setup.save_worker_settings(store, old)
+            store.close()
+
+            def runtime_factory() -> FakeRuntime:
+                current_store = open_store(parent)
+                try:
+                    captured.append(worker_setup.load_worker_settings(current_store))
+                finally:
+                    current_store.close()
+                runtime = FakeRuntime(immediate=False)
+                runtimes.append(runtime)
+                if len(runtimes) == 1:
+                    entered.set()
+                    if not release.wait(10):
+                        raise AssertionError("runtime construction timed out")
+                else:
+                    started.set()
+                return runtime
+
+            def run() -> None:
+                try:
+                    result.put(windows_tray.tray_main(["--state-dir", parent], view_factory=factory, setup_view_factory=View, runtime_factory=runtime_factory))
+                except BaseException as exc:
+                    result.put(exc)
+                finally:
+                    finished.set()
+
+            with patch.object(windows_tray.TrayStateModel, "request_restart", restart):
+                main = threading.Thread(target=run)
+                main.start()
+                try:
+                    self.assertTrue(ready.wait(10))
+                    self.assertTrue(entered.wait(10))
+                    cast(Callable[[], None], actions["on_settings"])()
+                    self.assertTrue(restart_called.wait(10))
+                    release.set()
+                    self.assertTrue(started.wait(10))
+                    self.assertEqual([old, new], captured)
+                    self.assertEqual(1, runtimes[0].stop_requests)
+                    cast(windows_tray.TrayStateModel, actions["model"]).request_quit()
+                    self.assertTrue(finished.wait(10))
+                    self.assertEqual(0, result.get_nowait())
+                finally:
+                    release.set()
+                    if "model" in actions:
+                        cast(windows_tray.TrayStateModel, actions["model"]).request_quit()
+                    main.join(10)
+
     def test_quit_racing_runtime_publication_stops_runtime(self) -> None:
         ready, factory_done, checked, release, quitting, finished = (
             threading.Event() for _ in range(6)
@@ -289,6 +373,9 @@ assert result == 0
     def test_shutdown_defers_close_until_save_finishes(self) -> None:
         self._exercise_shutdown(fail=False)
 
+    def test_packaged_dialog_run_releases_ui_owner_on_save_timeout(self) -> None:
+        self._exercise_shutdown(fail=False, actual_dialog=True)
+
     def test_shutdown_reports_late_save_failure(self) -> None:
         self._exercise_shutdown(fail=True)
 
@@ -308,6 +395,7 @@ assert result == 0
         commit_first: bool = False,
         finish_first: bool = False,
         report_failure_first: bool = False,
+        actual_dialog: bool = False,
     ) -> None:
         entered, release, closed, ready, finished, save_done = (
             threading.Event() for _ in range(6)
@@ -323,6 +411,7 @@ assert result == 0
         original_save = worker_setup.save_settings_fields
         original_close = WorkerLocalStore.close
         original_shutdown = windows_tray.SettingsStoreLifetime.shutdown
+        original_join = threading.Thread.join
         fields = worker_setup.SetupFields(server_ui_url="http://127.0.0.1:43211")
         old = worker_setup.WorkerLocalSettings(server_ui_url="http://127.0.0.1:43210")
 
@@ -363,12 +452,51 @@ assert result == 0
             _ = timeout
             return original_shutdown(lifetime, timeout=0)
 
+        def join(thread: threading.Thread, timeout: float | None = None) -> None:
+            original_join(thread, timeout=0 if actual_dialog and thread.name == "worker-settings" else timeout)
+
         class Root:
+            def title(self, title: str) -> None:
+                _ = title
+
+            def resizable(self, width: bool, height: bool) -> None:
+                _ = width, height
+
+            def protocol(self, name: str, callback: Callable[[], None]) -> None:
+                _ = name, callback
+
             def after(self, ms: int, callback: Callable[[], None]) -> None:
                 _ = ms, callback
 
             def destroy(self) -> None:
                 closed.set()
+
+            def mainloop(self) -> None:
+                dialog = dialogs[-1]
+                cast(Callable[[], None], getattr(dialog, "_on_primary"))()
+                event = cast(threading.Event, getattr(dialog, "_close_request"))
+                if not event.wait(10):
+                    raise AssertionError("dialog close signal timed out")
+                cast(Callable[[], None], getattr(dialog, "_poll_close"))()
+
+        class Widget:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                _ = args, kwargs
+
+            def grid(self, **kwargs: object) -> None:
+                _ = kwargs
+
+            def columnconfigure(self, column: int, *, weight: int) -> None:
+                _ = column, weight
+
+        class Tk:
+            @staticmethod
+            def Tk() -> Root:
+                return Root()
+
+        class Ttk:
+            Frame: type[Widget] = Widget
+            Label: type[Widget] = Widget
 
         class View:
             def __init__(self) -> None:
@@ -402,6 +530,20 @@ assert result == 0
                 setattr(dialog, "_show_status", show_status)
                 dialog.result = None
                 dialogs.append(dialog)
+                if actual_dialog:
+                    def build_rows(body: object, row: int, first: bool) -> int:
+                        _ = body, first
+                        return row
+
+                    setattr(dialog, "_tk", Tk)
+                    setattr(dialog, "_ttk", Ttk)
+                    setattr(dialog, "_context", context)
+                    setattr(dialog, "_save_thread", None)
+                    setattr(dialog, "_build_rows", build_rows)
+                    setattr(dialog, "_build_status_and_buttons", build_rows)
+                    setattr(dialog, "_sync_ollama_state", lambda: None)
+                    setattr(dialog, "_on_cancel", lambda: None)
+                    return cast(worker_setup.WorkerLocalSettings | None, cast(Callable[[], object], getattr(dialog, "run"))())
                 cast(Callable[[], None], getattr(dialog, "_on_primary"))()
                 if finish_first or report_failure_first:
                     if not poll_requested.wait(10):
@@ -434,7 +576,7 @@ assert result == 0
                 finally:
                     finished.set()
 
-            with patch.object(windows_tray, "save_settings_fields", blocked_save), patch.object(WorkerLocalStore, "close", observe_close), patch.object(windows_tray.SettingsStoreLifetime, "shutdown", expire):
+            with patch.object(windows_tray, "save_settings_fields", blocked_save), patch.object(WorkerLocalStore, "close", observe_close), patch.object(windows_tray.SettingsStoreLifetime, "shutdown", expire), patch.object(threading.Thread, "join", join):
                 main = threading.Thread(target=run)
                 main.start()
                 try:
@@ -455,11 +597,13 @@ assert result == 0
                         self.assertTrue(closed.wait(10))
                     self.assertTrue(finished.wait(10))
                     self.assertEqual(2 if report_failure_first else 0, results.get_nowait())
+                    if actual_dialog:
+                        self.assertFalse(any(thread.name == "scarcity-router-ui" for thread in threading.enumerate()))
                     if not (finish_first or report_failure_first):
                         self.assertFalse(store_closed.is_set())
                     release.set()
                     self.assertTrue(store_closed.wait(10))
-                    save_threads[0].join(10)
+                    original_join(save_threads[0], timeout=10)
                     self.assertFalse(save_threads[0].is_alive())
                     main.join(10)
                     self.assertTrue(cast(queue.Queue[object], getattr(dialogs[0], "_results")).empty())
@@ -484,6 +628,8 @@ assert result == 0
                 self.assertEqual(2, len(runtimes))
             if fail or not (commit_first or finish_first):
                 self.assertIn("settings save failed (WorkerSetupConfigError)", log)
+            if actual_dialog:
+                self.assertIn("settings dialog ended without confirmed result", log)
 
 
 if __name__ == "__main__":

@@ -536,8 +536,10 @@ def run_tray_worker(
             request_stop(runtime)
 
     def request_restart() -> None:
-        restart_requested.set()
-        for runtime in runtime_box:
+        with runtime_lock:
+            restart_requested.set()
+            current = tuple(runtime_box)
+        for runtime in current:
             request_stop(runtime)
 
     model = TrayStateModel(
@@ -570,11 +572,15 @@ def run_tray_worker(
                 return
             with runtime_lock:
                 quitting = quit_event.is_set()
-                if not quitting:
+                restarting = restart_requested.is_set()
+                if not quitting and not restarting:
                     runtime_box[:] = [runtime]
             if quitting:
                 request_stop(runtime)
                 return
+            if restarting:
+                request_stop(runtime)
+                continue
             model.mark_running()
             try:
                 reason: str = str(runtime.run())
@@ -1021,7 +1027,12 @@ def _open_settings_dialog(
                 return lifetime.run(persist)
 
             saved = view.run_settings(context, save)
-        except Exception:  # noqa: BLE001 - a dialog failure never kills the tray
+        except Exception as exc:  # a dialog failure never kills the tray
+            if not _try_append_worker_log(
+                diagnostics_dir,
+                (f"settings dialog ended without confirmed result ({type(exc).__name__})",),
+            ):
+                lifetime.mark_log_failed()
             return
         finally:
             settings_slot.release()

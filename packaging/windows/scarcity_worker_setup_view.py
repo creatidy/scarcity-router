@@ -223,7 +223,13 @@ class _SetupDialog:
         root.after(_POLL_MS, self._poll_close)
         root.mainloop()
         if self._save_thread is not None:
-            self._save_thread.join()
+            self._save_thread.join(timeout=5)
+            if self._save_thread.is_alive():
+                from scarcity_router.worker_setup import WorkerSetupConfigError
+
+                raise WorkerSetupConfigError(
+                    "settings save did not finish before dialog shutdown"
+                )
         return self.result
 
     def _poll_close(self) -> None:
