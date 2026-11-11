@@ -522,7 +522,8 @@ def _try_append_worker_log(state_dir: str | Path, lines: tuple[str, ...] | list[
                 for events in attempts.values():
                     retained_lines.update(events.values())
                 with log_path.open("w", encoding="utf-8") as handle:
-                    _ = handle.write(_SAVE_HISTORY_NOTICE)
+                    if retained_lines:
+                        _ = handle.write(_SAVE_HISTORY_NOTICE)
                     for _, retained in sorted(retained_lines):
                         _ = handle.write(retained)
             with log_path.open("a", encoding="utf-8") as handle:
