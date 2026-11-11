@@ -215,6 +215,42 @@ class UiDispatcher:
             task()
 
 
+class SettingsStoreLifetime:
+    """Fence late settings callbacks and defer store closure until users exit."""
+
+    def __init__(self, store: WorkerLocalStore) -> None:
+        self._store: WorkerLocalStore = store
+        self._lock: threading.Lock = threading.Lock()
+        self._idle: threading.Event = threading.Event()
+        self._idle.set()
+        self._active: int = 0
+        self._closing: bool = False
+
+    def run(self, action: Callable[[], _T]) -> _T:
+        with self._lock:
+            if self._closing:
+                raise WorkerSetupConfigError("settings save cancelled during shutdown")
+            self._active += 1
+            self._idle.clear()
+        try:
+            return action()
+        finally:
+            with self._lock:
+                self._active -= 1
+                if self._active == 0:
+                    if self._closing:
+                        self._store.close()
+                    self._idle.set()
+
+    def shutdown(self, *, timeout: float = 10.0) -> bool:
+        with self._lock:
+            self._closing = True
+            if self._active == 0:
+                self._store.close()
+                return True
+        return self._idle.wait(timeout)
+
+
 def is_supported() -> bool:
     """Whether the tray UX is supported on this platform (Windows only)."""
     return sys.platform == "win32"
@@ -422,6 +458,7 @@ def run_tray_worker(
     state_dir: str | Path,
     worker_id: str | None,
     server_origin: str | None,
+    on_quit: Callable[[], None] | None = None,
 ) -> None:
     """Drive the tray worker: one reconnecting runtime plus the tray view.
 
@@ -465,6 +502,8 @@ def run_tray_worker(
 
     def request_quit() -> None:
         quit_event.set()
+        if on_quit is not None:
+            on_quit()
         for runtime in runtime_box:
             request_stop(runtime)
 
@@ -706,6 +745,7 @@ def _tray_session_main(
             else WorkerOrigin.parse(str(server_origin))
         )
         store = open_worker_store(resolved_dir)
+        settings_lifetime = SettingsStoreLifetime(store)
         try:
             # The runtime and the settings dialog use the store for the
             # whole tray session, so it stays open until run_tray_worker
@@ -755,6 +795,8 @@ def _tray_session_main(
                     store,
                     worker_id or "",
                     origin_text,
+                    lifetime=settings_lifetime,
+                    diagnostics_dir=diagnostics_dir,
                     restart=restart_hook[0] if restart_hook else None,
                     settings_slot=settings_slot,
                 )
@@ -780,9 +822,12 @@ def _tray_session_main(
                 state_dir=diagnostics_dir,
                 worker_id=worker_id,
                 server_origin=origin_text,
+                on_quit=dispatcher.close_request.set,
             )
         finally:
-            store.close()
+            _ = dispatcher.shutdown()
+            if not settings_lifetime.shutdown():
+                append_worker_log(diagnostics_dir, ("settings shutdown timed out; store close deferred",))
     except (WorkerConfigError, ValueError, OSError, TrayNotAvailableError) as exc:
         _pre_tray_error(str(exc))
         return 2
@@ -860,6 +905,8 @@ def _open_settings_dialog(
     worker_id: str,
     origin_text: str,
     *,
+    lifetime: SettingsStoreLifetime,
+    diagnostics_dir: Path,
     restart: Callable[[], None] | None,
     settings_slot: threading.Semaphore,
 ) -> None:
@@ -909,17 +956,33 @@ def _open_settings_dialog(
             )
 
             def save(fields: SetupFields) -> "worker_setup.WorkerLocalSettings":
-                return save_settings_fields(fields, store=store)
+                try:
+                    return lifetime.run(lambda: save_settings_fields(fields, store=store))
+                except Exception as exc:
+                    append_worker_log(
+                        diagnostics_dir,
+                        (f"settings save failed ({type(exc).__name__})",),
+                    )
+                    raise
 
             saved = view.run_settings(context, save)
         except Exception:  # noqa: BLE001 - a dialog failure never kills the tray
             return
         finally:
             settings_slot.release()
-        if saved is not None and restart is not None:
+        if saved is not None and restart is not None and not dispatcher.close_request.is_set():
             restart()
 
-    _ = dispatcher.submit(task)
+    def guarded_task() -> None:
+        try:
+            lifetime.run(task)
+        except WorkerSetupConfigError:
+            settings_slot.release()
+
+    try:
+        _ = dispatcher.submit(guarded_task)
+    except RuntimeError:
+        settings_slot.release()
 
 
 def _run_first_run(

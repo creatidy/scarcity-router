@@ -431,7 +431,8 @@ class _SetupDialog:
                     saved = WorkerSetupConfigError(
                         f"saving failed ({type(exc).__name__})"
                     )
-                self._results.put(saved)
+                if self._close_request is None or not self._close_request.is_set():
+                    self._results.put(saved)
 
             threading.Thread(target=persist, name="worker-settings", daemon=True).start()
             self._show_status("Saving...", error=False)
