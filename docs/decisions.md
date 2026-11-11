@@ -6818,6 +6818,13 @@ No MI/Kernel mutation, model inference, Daybreak, release or deployment is autho
 
 ## D-085: Standalone and Foundry deployment direction (#239, 2026-10-31)
 
+The owner's 2026-11-11 decision for #224 supersedes the transport and
+acceptance obligations below where they conflict with the supported single-host
+Compose plaintext configuration. Native loopback HTTP and verified TLS for
+advanced networked deployments remain supported; topology enforcement,
+automatic certificate management and origin migration are not local
+installation prerequisites. Historical evidence and review outcomes remain.
+
 - **Status:** Owner-directed prospective architecture, subject to independent
   review and integration. This record does not retire #224's accepted Tier-B
   requirement or grant additional review capacity.

@@ -121,6 +121,13 @@ class DockerBuildContextParityTests(unittest.TestCase):
         self.assertFalse(legacy & force_include)
         self.assertFalse(legacy & _build_stage_copy_sources())
 
+    def test_local_compose_publishes_only_host_loopback(self) -> None:
+        compose = (REPO / "examples/docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn("--local-container-http", compose)
+        self.assertIn('"127.0.0.1:8787:8787"', compose)
+        self.assertIn('"127.0.0.1:8790:8790"', compose)
+        self.assertNotIn("network_mode: host", compose)
+
 
 if __name__ == "__main__":
     _ = unittest.main()

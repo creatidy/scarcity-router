@@ -415,8 +415,7 @@ table and measured first-run steps live in
 ### Server (one container)
 
 ```bash
-docker build -t scarcity-router .
-docker compose -f examples/docker-compose.yml up -d  # loopback default
+docker compose -f examples/docker-compose.yml up -d --build
 # In a private terminal, issue a 15-minute claim against the running /data store:
 docker compose -f examples/docker-compose.yml exec scarcity-router python -m scarcity_router.control_server --data-dir /data --issue-bootstrap-claim
 # open http://127.0.0.1:8787/admin and complete first-run onboarding:
@@ -429,18 +428,27 @@ administrator exists, issue a new claim against the same store. Custom
 installations must use their running server's actual `--data-dir`; see
 [`docs/control-surface.md`](docs/control-surface.md#first-run-state-and-administrator-onboarding).
 
-Defaults are loopback-only. LAN/VPN exposure requires verified TLS
-certificates (`--host 0.0.0.0 --tls-certfile ... --tls-keyfile ...`) — the
-server refuses a non-loopback plaintext bind by design (D-044). The compose
-example documents the real flag surface, volume and update discipline;
-nothing is invented. The image is not published to any registry yet (the
+The Compose example uses ordinary Docker networking, publishes only to host
+loopback, and explicitly enables local-container plaintext. No certificates or
+Docker Desktop setting changes are needed. A host worker may pair using
+`srw://127.0.0.1:8790`; container loopback is not host loopback. Changing the
+supplied network or publication is the administrator's responsibility.
+For LAN, VPN or distributed deployments configure verified TLS and routing
+explicitly using `--host`, `--tls-certfile` and `--tls-keyfile`; a remote
+worker listener also needs `--worker-tls-certfile` and `--worker-tls-keyfile`.
+Omit `--local-container-http` in that profile. The native default continues
+to refuse non-loopback plaintext. Certificate replacement is documented in
+[`docs/security.md`](docs/security.md#certificate-replacement).
+The image is not published to any registry yet (the
 GHCR contract is recorded in
 [`docs/release-engineering.md`](docs/release-engineering.md)).
 
 ### Worker (bridges localhost-only resources)
 
 One-time pairing: the administrator issues a short-lived one-time code in
-the web UI (Workers page); the worker redeems it over verified TLS:
+the web UI (Workers page). For the local Compose profile, use
+`srw://127.0.0.1:8790` from the host. For advanced networked deployments,
+the worker redeems the code over verified TLS:
 
 ```bash
 scarcity-router-worker pair --server srws://SERVER-HOST:8790 --code CODE

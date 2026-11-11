@@ -365,52 +365,31 @@ provider access or spending ceilings (D-042).
 
 ### Client-transport tiers (D-056)
 
-Plain HTTP is a SUPPORTED LOCAL TRANSPORT for client traffic to the
-composed HTTP listener, not an insecure-debug escape hatch; TLS remains
-required on non-loopback listeners. The current direction and historical
-Tier-B requirement are reconciled in [`docs/decisions.md`](decisions.md) D-085:
+The 2026-11-11 owner decision for #224 supersedes the conflicting deployment
+requirements in D-056, D-083 and D-085: the shipped single-host Compose
+configuration explicitly permits plaintext container listeners and publishes
+their ports on host loopback. It does not monitor Docker networking; an
+administrator changing the supplied topology assumes responsibility for it.
+Native defaults still refuse non-loopback plaintext, and networked deployments
+require verified TLS. Authentication, authorization, CSRF and credential
+separation remain mandatory. Automatic certificate management and verified
+worker-origin migration remain unimplemented, not prerequisites for local use.
 
-- **A. Loopback — supported, implemented.** Loopback HTTP is supported
-  for a locally running harness, a locally running Scarcity
-  Router, and a container sharing the host network namespace (native
-  Linux `--network host` shares the host loopback; for example ZCode →
-  `http://127.0.0.1:8787/v1` → a local Scarcity Router container). No
-  certificates are required. Use an authority matching the configured bind:
-  a `127.0.0.1` bind rejects a `localhost` Host header. A standard Docker
-  bridge publish of a loopback port (`-p 127.0.0.1:8787:8787`) is NOT supported in
-  plaintext — the published traffic reaches the container on a
-  non-loopback interface, where a plaintext bind is refused. Host networking
-  on Docker Desktop is not established by the native Linux behavior.
-- **B. Bridge and multi-container transport.** Use authentication and
-  verified TLS for the composed listener. A dedicated or internal network,
-  loopback publication or startup-only inspection does not continuously
-  enforce a non-routable boundary. D-056's accepted plaintext Tier-B
-  requirement remains unimplemented in #224 pending formal disposition;
-  it is not supported by the current server or default deployment direction.
-- **C. Cross-host / LAN / VPN / remote — TLS REQUIRED (implemented).**
-  Windows-to-LAN, laptop-to-server over VPN, any other machine, and
-  internet-facing deployments use HTTPS. Plain HTTP over a VPN is not
-  automatically local merely because the VPN itself may encrypt traffic;
-  the cross-host policy stays TLS-by-default and predictable.
-- **D. Remote TLS UX.** The preferred normal path for remote/self-hosted
-  deployments is a public FQDN with a publicly trusted certificate and
-  automated renewal (for example
-  `https://scarcity-router.creatidy.com:8787`); a private CA is a supported
-  advanced option and is never required for ordinary localhost operation
-  (automatic issuance and renewal remain open under #224). Never introduced in any tier:
-  `verify=false`, certificate-verification bypass, trust-on-first-use, or
-  silent HTTPS→HTTP fallback; a scheme change is explicit.
-- **E. Worker transport — unchanged.** These tiers govern CLIENT traffic
-  to the composed HTTP listener as a whole. Supported loopback HTTP can
-  carry execution, machine, control and administration traffic, while
-  authentication, authorization, CSRF and credential separation remain
-  fully enforced — only transport confidentiality changes inside that
-  bounded boundary, and cross-host traffic remains TLS-required. The
-  worker protocol keeps its separate authentication and transport security
-  semantics (verified TLS `srws://`, loopback-plaintext only as the
-  bounded dev/test exception recorded in
-  [`docs/worker-protocol.md`](worker-protocol.md)) unless a separate
-  explicit decision changes them.
+- Native loopback HTTP and the supplied ordinary single-host Compose profile
+  require no certificates. Use `127.0.0.1` in the HTTP URL: the local profile
+  rejects other Host headers. A host worker uses `srw://127.0.0.1:8790`.
+- The explicit `--local-container-http` option permits plaintext on wildcard
+  listeners. It does not verify container isolation: use it only with the
+  supplied loopback port publication and a trusted local Compose network.
+  Other containers on that network can reach the listeners. Authentication
+  remains mandatory, but HTTP does not protect credentials from a peer able
+  to observe the network.
+- Cross-host, LAN, VPN and independently configured distributed container
+  deployments require verified TLS (`https://` and `srws://`). Operators
+  configure routing, certificate issuance and renewal. The verified
+  replacement mechanism remains available; it is not automatic issuance.
+- Never use `verify=false`, certificate-verification bypass, trust-on-first-use
+  or silent HTTPS-to-HTTP fallback. Worker credentials remain origin-bound.
 
 ### Certificate Replacement
 

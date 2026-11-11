@@ -737,6 +737,32 @@ class StartupBoundaryTests(unittest.TestCase):
         finally:
             server.server_close()
 
+    def test_local_container_requires_explicit_wildcard(self) -> None:
+        application = make_application()
+        with self.assertRaises(ValueError):
+            _ = make_gateway_server(application, host="127.0.0.1", port=0, local_container=True)
+        server = make_gateway_server(application, host="0.0.0.0", port=0, local_container=True)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            connection.request("GET", "/v1/models", headers={"Host": f"127.0.0.1:{port}"})
+            response = connection.getresponse()
+            self.assertEqual(401, response.status)
+            _ = response.read()
+            connection.close()
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            connection.request("GET", "/v1/models", headers={"Host": "attacker.example"})
+            response = connection.getresponse()
+            self.assertEqual(400, response.status)
+            _ = response.read()
+            connection.close()
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+
     def test_parser_requires_client_keys(self) -> None:
         with self.assertRaises(SystemExit):
             _ = build_parser().parse_args([])

@@ -237,10 +237,12 @@ class GatewayHTTPServer(ThreadingHTTPServer):
         application: GatewayApplication,
         tls_context: ssl.SSLContext | None = None,
         control_plane: GatewayControlSurface | None = None,
+        local_container: bool = False,
     ) -> None:
         super().__init__((host, port), GatewayRequestHandler)
         self.application = application
         self.control_plane = control_plane
+        self.local_container: bool = local_container
         self.maintenance: Callable[[], None] | None = None
         self._tls_context: ssl.SSLContext | None = tls_context
 
@@ -445,8 +447,9 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
             )
         server = cast(GatewayHTTPServer, self.server)
         bound_host, bound_port = cast("tuple[str, int]", server.server_address)
-        if bound_host in (BIND_HOST, "localhost", "::1"):
-            if host_values[0] not in (bound_host, f"{bound_host}:{bound_port}"):
+        if server.local_container or bound_host in (BIND_HOST, "localhost", "::1"):
+            expected = BIND_HOST if server.local_container else bound_host
+            if host_values[0] not in (expected, f"{expected}:{bound_port}"):
                 raise GatewayError.invalid_request(
                     "Host header must identify this listener", code="invalid_host"
                 )
@@ -1095,9 +1098,12 @@ def make_gateway_server(
     port: int = DEFAULT_PORT,
     tls_context: ssl.SSLContext | None = None,
     control_plane: GatewayControlSurface | None = None,
+    local_container: bool = False,
 ) -> GatewayHTTPServer:
     """Bind the execution server; non-loopback binds require TLS (D-044)."""
-    if not _loopback(host) and tls_context is None:
+    if local_container and (host != "0.0.0.0" or tls_context is not None):
+        raise ValueError("local container mode requires a plaintext 0.0.0.0 listener")
+    if not _loopback(host) and tls_context is None and not local_container:
         raise ValueError(
             "a non-loopback execution listener requires TLS (certificate and "
             + "key files); the gateway never serves plaintext off localhost"
@@ -1108,6 +1114,7 @@ def make_gateway_server(
         application=application,
         tls_context=tls_context,
         control_plane=control_plane,
+        local_container=local_container,
     )
 
 
