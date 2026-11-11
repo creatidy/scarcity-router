@@ -226,6 +226,15 @@ class SettingsStoreLifetime:
         self._active: int = 0
         self._closing: bool = False
         self._cancelled: bool = False
+        self._log_failed: bool = False
+
+    def mark_log_failed(self) -> None:
+        with self._lock:
+            self._log_failed = True
+
+    def log_failed(self) -> bool:
+        with self._lock:
+            return self._log_failed
 
     def cancel(self) -> None:
         with self._lock:
@@ -438,8 +447,12 @@ def append_worker_log(state_dir: str | Path, lines: tuple[str, ...] | list[str])
     swallowed — diagnostics are best-effort and must never crash the
     worker.
     """
+    _ = _try_append_worker_log(state_dir, lines)
+
+
+def _try_append_worker_log(state_dir: str | Path, lines: tuple[str, ...] | list[str]) -> bool:
     if not lines:
-        return
+        return True
     log_path = Path(state_dir) / WORKER_LOG_NAME
     try:
         if log_path.exists() and log_path.stat().st_size > WORKER_LOG_MAX_BYTES:
@@ -448,7 +461,8 @@ def append_worker_log(state_dir: str | Path, lines: tuple[str, ...] | list[str])
             for line in lines:
                 _ = handle.write(line.rstrip("\n") + "\n")
     except OSError:
-        return
+        return False
+    return True
 
 
 #: The duck-typed runtime surface the tray loop drives (satisfied by the
@@ -492,6 +506,7 @@ def run_tray_worker(
     quit_event = threading.Event()
     restart_requested = threading.Event()
     runtime_box: list[TrayRuntime] = []
+    runtime_lock = threading.Lock()
 
     def write_log(runtime: TrayRuntime) -> None:
         append_worker_log(directory, runtime.diagnostics())
@@ -512,10 +527,12 @@ def run_tray_worker(
         runtime.request_stop()
 
     def request_quit() -> None:
-        quit_event.set()
+        with runtime_lock:
+            quit_event.set()
+            current = tuple(runtime_box)
         if on_quit is not None:
             on_quit()
-        for runtime in runtime_box:
+        for runtime in current:
             request_stop(runtime)
 
     def request_restart() -> None:
@@ -551,10 +568,13 @@ def run_tray_worker(
             except Exception as exc:
                 model.mark_error(f"cannot start runtime ({type(exc).__name__})")
                 return
-            if quit_event.is_set():
+            with runtime_lock:
+                quitting = quit_event.is_set()
+                if not quitting:
+                    runtime_box[:] = [runtime]
+            if quitting:
                 request_stop(runtime)
                 return
-            runtime_box[:] = [runtime]
             model.mark_running()
             try:
                 reason: str = str(runtime.run())
@@ -850,10 +870,13 @@ def _tray_session_main(
         finally:
             _ = dispatcher.shutdown()
             if not settings_lifetime.shutdown():
-                append_worker_log(
+                if not _try_append_worker_log(
                     diagnostics_dir,
                     ("shutdown timed out; pending work is unconfirmed and settings may not persist",),
-                )
+                ):
+                    settings_lifetime.mark_log_failed()
+        if settings_lifetime.log_failed():
+            return 2
     except (WorkerConfigError, ValueError, OSError, TrayNotAvailableError) as exc:
         _pre_tray_error(str(exc))
         return 2
@@ -982,18 +1005,20 @@ def _open_settings_dialog(
             )
 
             def save(fields: SetupFields) -> "worker_setup.WorkerLocalSettings":
-                try:
-                    return lifetime.run(
-                        lambda: save_settings_fields(
+                def persist() -> worker_setup.WorkerLocalSettings:
+                    try:
+                        return save_settings_fields(
                             fields, store=store, begin_write=lifetime.begin_write
                         )
-                    )
-                except Exception as exc:
-                    append_worker_log(
-                        diagnostics_dir,
-                        (f"settings save failed ({type(exc).__name__})",),
-                    )
-                    raise
+                    except Exception as exc:
+                        if not _try_append_worker_log(
+                            diagnostics_dir,
+                            (f"settings save failed ({type(exc).__name__})",),
+                        ):
+                            lifetime.mark_log_failed()
+                        raise
+
+                return lifetime.run(persist)
 
             saved = view.run_settings(context, save)
         except Exception:  # noqa: BLE001 - a dialog failure never kills the tray

@@ -159,6 +159,7 @@ class _SetupDialog:
         self._close_request = close_request
         self._results: queue.Queue[object] = queue.Queue()
         self._in_flight = False
+        self._save_thread: threading.Thread | None = None
         self.result: SetupOutcome | WorkerLocalSettings | None = None
 
     # ── Construction and mainloop ───────────────────────────────────
@@ -221,6 +222,8 @@ class _SetupDialog:
         self._sync_ollama_state()
         root.after(_POLL_MS, self._poll_close)
         root.mainloop()
+        if self._save_thread is not None:
+            self._save_thread.join()
         return self.result
 
     def _poll_close(self) -> None:
@@ -434,7 +437,10 @@ class _SetupDialog:
                 if self._close_request is None or not self._close_request.is_set():
                     self._results.put(saved)
 
-            threading.Thread(target=persist, name="worker-settings", daemon=True).start()
+            self._save_thread = threading.Thread(
+                target=persist, name="worker-settings", daemon=True
+            )
+            self._save_thread.start()
             self._show_status("Saving...", error=False)
         self._root.after(_POLL_MS, self._poll_results)
 

@@ -52,6 +52,71 @@ def _dialog_class() -> type[_Dialog]:
 
 
 class PendingSaveTests(unittest.TestCase):
+    def test_quit_racing_runtime_publication_stops_runtime(self) -> None:
+        ready, factory_done, checked, release, quitting, finished = (
+            threading.Event() for _ in range(6)
+        )
+        actions: dict[str, object] = {}
+        runtime = FakeRuntime(immediate=False)
+        original_is_set = threading.Event.is_set
+
+        def is_set(event: threading.Event) -> bool:
+            result = original_is_set(event)
+            if (
+                threading.current_thread().name == "scarcity-router-worker"
+                and original_is_set(factory_done)
+                and not original_is_set(checked)
+            ):
+                checked.set()
+                if not release.wait(10):
+                    raise AssertionError("runtime publication release timed out")
+            return result
+
+        def runtime_factory() -> FakeRuntime:
+            factory_done.set()
+            return runtime
+
+        def factory(model: windows_tray.TrayStateModel, opener: Callable[[], None], directory: Path, on_settings: Callable[[], None]) -> RecordingView:
+            view = recording_view_factory(RecordingView(), actions)(model, opener, directory, on_settings)
+            ready.set()
+            return view
+
+        with tempfile.TemporaryDirectory() as parent:
+            store = open_store(parent)
+            store.save_identity(synthetic_identity())
+            store.close()
+
+            def run() -> None:
+                try:
+                    _ = windows_tray.tray_main(["--state-dir", parent], view_factory=factory, runtime_factory=runtime_factory)
+                finally:
+                    finished.set()
+
+            def quit_worker() -> None:
+                quitting.set()
+                cast(windows_tray.TrayStateModel, actions["model"]).request_quit()
+
+            with patch.object(threading.Event, "is_set", is_set):
+                main = threading.Thread(target=run)
+                main.start()
+                quit_thread = threading.Thread(target=quit_worker)
+                try:
+                    self.assertTrue(ready.wait(10))
+                    self.assertTrue(checked.wait(10))
+                    quit_thread.start()
+                    self.assertTrue(quitting.wait(10))
+                    release.set()
+                    self.assertTrue(finished.wait(10))
+                    quit_thread.join(10)
+                    main.join(10)
+                    self.assertGreaterEqual(runtime.stop_requests, 1)
+                    self.assertFalse(any(thread.name == "scarcity-router-worker" for thread in threading.enumerate()))
+                finally:
+                    release.set()
+                    main.join(10)
+                    if quit_thread.ident is not None:
+                        quit_thread.join(10)
+
     def test_process_exit_reports_unconfirmed_save(self) -> None:
         program = '''
 import queue, sys, threading
@@ -61,6 +126,7 @@ from tests.test_windows_pending_save import _dialog_class
 from tests.test_worker_first_run import FakeRuntime, RecordingView, open_store, recording_view_factory, synthetic_identity
 
 directory = sys.argv[1]
+mode = sys.argv[2]
 entered, ready = threading.Event(), threading.Event()
 actions = {}
 store = open_store(directory)
@@ -69,9 +135,18 @@ worker_setup.save_worker_settings(store, worker_setup.WorkerLocalSettings(server
 store.close()
 
 def blocked_save(fields, *, store, begin_write=None):
+    if mode == "failure":
+        raise worker_setup.WorkerSetupConfigError("synthetic failure")
     entered.set()
     threading.Event().wait()
     raise AssertionError("unreachable")
+
+write_log = windows_tray._try_append_worker_log
+def block_failure_log(directory, lines):
+    if mode == "failure" and lines[0].startswith("settings save failed"):
+        entered.set()
+        threading.Event().wait()
+    return write_log(directory, lines)
 
 class Root:
     def after(self, ms, callback): pass
@@ -112,29 +187,30 @@ def quit_when_saving():
 shutdown = windows_tray.SettingsStoreLifetime.shutdown
 def expire(lifetime, *, timeout=10): return shutdown(lifetime, timeout=0)
 threading.Thread(target=quit_when_saving).start()
-with patch.object(windows_tray, "save_settings_fields", blocked_save), patch.object(windows_tray.SettingsStoreLifetime, "shutdown", expire):
+with patch.object(windows_tray, "save_settings_fields", blocked_save), patch.object(windows_tray, "_try_append_worker_log", block_failure_log), patch.object(windows_tray.SettingsStoreLifetime, "shutdown", expire):
     result = windows_tray.tray_main(["--state-dir", directory], view_factory=factory, setup_view_factory=View, runtime_factory=lambda: FakeRuntime(immediate=False))
 assert result == 0
 '''
-        with tempfile.TemporaryDirectory() as parent:
-            completed = subprocess.run(
-                [sys.executable, "-c", program, parent],
-                capture_output=True,
-                text=True,
-                timeout=20,
-                check=False,
-            )
-            self.assertEqual(0, completed.returncode, completed.stderr)
-            log = (Path(parent) / windows_tray.WORKER_LOG_NAME).read_text()
-            self.assertIn("pending work is unconfirmed and settings may not persist", log)
-            store = open_store(parent)
-            try:
-                self.assertEqual(
-                    worker_setup.WorkerLocalSettings(server_ui_url="http://127.0.0.1:43210"),
-                    worker_setup.load_worker_settings(store),
+        for mode in ("save", "failure"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as parent:
+                completed = subprocess.run(
+                    [sys.executable, "-c", program, parent, mode],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                    check=False,
                 )
-            finally:
-                store.close()
+                self.assertEqual(0, completed.returncode, completed.stderr)
+                log = (Path(parent) / windows_tray.WORKER_LOG_NAME).read_text()
+                self.assertIn("pending work is unconfirmed and settings may not persist", log)
+                store = open_store(parent)
+                try:
+                    self.assertEqual(
+                        worker_setup.WorkerLocalSettings(server_ui_url="http://127.0.0.1:43210"),
+                        worker_setup.load_worker_settings(store),
+                    )
+                finally:
+                    store.close()
 
     def test_delayed_runtime_keeps_store_open_after_shutdown(self) -> None:
         entered, release, ready, finished, closed = (threading.Event() for _ in range(5))
@@ -222,8 +298,16 @@ assert result == 0
     def test_successful_save_before_quit_restarts_runtime(self) -> None:
         self._exercise_shutdown(fail=False, finish_first=True)
 
+    def test_failed_diagnostic_changes_shutdown_disposition(self) -> None:
+        self._exercise_shutdown(fail=True, report_failure_first=True)
+
     def _exercise_shutdown(
-        self, *, fail: bool, commit_first: bool = False, finish_first: bool = False
+        self,
+        *,
+        fail: bool,
+        commit_first: bool = False,
+        finish_first: bool = False,
+        report_failure_first: bool = False,
     ) -> None:
         entered, release, closed, ready, finished, save_done = (
             threading.Event() for _ in range(6)
@@ -319,7 +403,7 @@ assert result == 0
                 dialog.result = None
                 dialogs.append(dialog)
                 cast(Callable[[], None], getattr(dialog, "_on_primary"))()
-                if finish_first:
+                if finish_first or report_failure_first:
                     if not poll_requested.wait(10):
                         raise AssertionError("result poll timed out")
                     cast(Callable[[], None], getattr(dialog, "_poll_results"))()
@@ -339,6 +423,8 @@ assert result == 0
             store.save_identity(synthetic_identity())
             worker_setup.save_worker_settings(store, old)
             store.close()
+            if report_failure_first:
+                (Path(parent) / windows_tray.WORKER_LOG_NAME).mkdir()
 
             def run() -> None:
                 try:
@@ -357,17 +443,19 @@ assert result == 0
                     self.assertTrue(entered.wait(10))
                     save_threads = [thread for thread in threading.enumerate() if thread.name == "worker-settings"]
                     self.assertEqual(1, len(save_threads))
-                    if finish_first:
+                    if finish_first or report_failure_first:
                         release.set()
                         save_threads[0].join(10)
                         self.assertFalse(save_threads[0].is_alive())
                         poll_requested.set()
-                        self.assertTrue(restarted.wait(10))
+                        if finish_first:
+                            self.assertTrue(restarted.wait(10))
                     cast(windows_tray.TrayStateModel, actions["model"]).request_quit()
-                    self.assertTrue(closed.wait(10))
+                    if not report_failure_first:
+                        self.assertTrue(closed.wait(10))
                     self.assertTrue(finished.wait(10))
-                    self.assertEqual(0, results.get_nowait())
-                    if not finish_first:
+                    self.assertEqual(2 if report_failure_first else 0, results.get_nowait())
+                    if not (finish_first or report_failure_first):
                         self.assertFalse(store_closed.is_set())
                     release.set()
                     self.assertTrue(store_closed.wait(10))
@@ -385,6 +473,9 @@ assert result == 0
                 self.assertEqual(expected, actual)
             finally:
                 reopened.close()
+            if report_failure_first:
+                self.assertEqual(1, len(runtimes))
+                return
             log = (Path(parent) / windows_tray.WORKER_LOG_NAME).read_text()
             if not finish_first:
                 self.assertIn("shutdown timed out; pending work is unconfirmed", log)
