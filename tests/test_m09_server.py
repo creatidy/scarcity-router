@@ -63,6 +63,13 @@ class ParserTests(unittest.TestCase):
                     ]
                 )
 
+    def test_local_container_mode_rejects_mismatched_listeners(self) -> None:
+        with self.assertRaises(SystemExit):
+            _ = main(["--local-container-http"])
+        with self.assertRaises(SystemExit):
+            _ = main(["--local-container-http", "--host", "0.0.0.0",
+                      "--worker-listen-port", "8790"])
+
 
 class CompositionStartupTests(unittest.TestCase):
     def test_future_store_refuses_before_composition_or_listener(self) -> None:

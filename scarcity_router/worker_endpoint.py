@@ -1221,6 +1221,7 @@ class WorkerEndpoint:
         host: str = BIND_HOST,
         port: int = DEFAULT_PORT,
         tls_context: ssl.SSLContext | None = None,
+        local_container: bool = False,
     ) -> "_EndpointListener":
         """Bind the worker-protocol listener (server side).
 
@@ -1230,7 +1231,7 @@ class WorkerEndpoint:
         """
         if self._listener is not None:
             raise ValueError("worker_endpoint: a listener is already attached")
-        listener = _EndpointListener(self, host=host, port=port, tls_context=tls_context)
+        listener = _EndpointListener(self, host=host, port=port, tls_context=tls_context, local_container=local_container)
         self._listener = listener
         return listener
 
@@ -1245,11 +1246,14 @@ class _EndpointListener:
         host: str,
         port: int,
         tls_context: ssl.SSLContext | None,
+        local_container: bool = False,
     ) -> None:
         self._endpoint: WorkerEndpoint = endpoint
         self._tls_context: ssl.SSLContext | None = tls_context
         loopback = host in (BIND_HOST, "localhost", "::1")
-        if not loopback and tls_context is None:
+        if local_container and (host != "0.0.0.0" or tls_context is not None):
+            raise ValueError("local container mode requires a plaintext 0.0.0.0 worker listener")
+        if not loopback and tls_context is None and not local_container:
             raise ValueError(
                 "a non-loopback worker-protocol listener requires TLS "
                 + "(certificate and key files)"

@@ -100,6 +100,10 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"TCP port to bind (default: {DEFAULT_PORT})",
     )
     _ = parser.add_argument(
+        "--local-container-http", action="store_true",
+        help="allow plaintext container listeners; publish only on host loopback",
+    )
+    _ = parser.add_argument(
         "--data-dir",
         default=str(DEFAULT_DATA_DIR),
         metavar="DIR",
@@ -235,7 +239,10 @@ def _main(argv: list[str] | None, ownership: ExitStack) -> int:
     keyfile = arguments["tls_keyfile"]
     if (certfile is None) != (keyfile is None):
         parser.error("--tls-certfile and --tls-keyfile must be used together")
-    if not _loopback(host) and certfile is None:
+    local_container = arguments["local_container_http"] is True
+    if local_container and (host != "0.0.0.0" or certfile is not None):
+        parser.error("--local-container-http requires plaintext --host 0.0.0.0")
+    if not _loopback(host) and certfile is None and not local_container:
         parser.error("a non-loopback bind requires --tls-certfile/--tls-keyfile")
     worker_host = arguments["worker_listen_host"]
     if not isinstance(worker_host, str) or not worker_host:
@@ -254,7 +261,9 @@ def _main(argv: list[str] | None, ownership: ExitStack) -> int:
         parser.error(
             "--worker-tls-certfile and --worker-tls-keyfile must be used together"
         )
-    if worker_port is not None and not _loopback(worker_host) and worker_certfile is None:
+    if local_container and worker_port is not None and (worker_host != "0.0.0.0" or worker_certfile is not None):
+        parser.error("--local-container-http requires a plaintext worker listener on 0.0.0.0")
+    if worker_port is not None and not _loopback(worker_host) and worker_certfile is None and not local_container:
         parser.error(
             "a non-loopback worker-protocol listener requires "
             + "--worker-tls-certfile/--worker-tls-keyfile"
@@ -349,7 +358,9 @@ def _main(argv: list[str] | None, ownership: ExitStack) -> int:
             instance.check_directory()
         plane = ControlPlane(
             store=store,
-            own_origins=(f"http://{host}:{raw_port}", f"https://{host}:{raw_port}"),
+            own_origins=(f"http://{host}:{raw_port}", f"https://{host}:{raw_port}", *(
+                (f"http://127.0.0.1:{raw_port}", f"http://localhost:{raw_port}") if local_container else ()
+            )),
             tls=certfile is not None,
             ui_dispatcher=dispatch_ui,
             mi_config_path=Path(mi_config) if isinstance(mi_config, str) else None,
@@ -371,6 +382,7 @@ def _main(argv: list[str] | None, ownership: ExitStack) -> int:
             port=raw_port,
             tls_context=tls_context,
             control_plane=plane,
+            local_container=local_container,
         )
         if worker_port is not None:
             # The OPTIONAL worker-protocol listener: same process, its own
@@ -379,6 +391,7 @@ def _main(argv: list[str] | None, ownership: ExitStack) -> int:
                 host=worker_host,
                 port=worker_port,
                 tls_context=worker_tls_context,
+                local_container=local_container,
             )
         # Commit only after every configured listener has bound. Neither listener
         # accepts requests before the active MI server is installed.

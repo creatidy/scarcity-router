@@ -502,6 +502,14 @@ class ListenerTests(EndpointTestCase):
     def setUp(self) -> None:
         super().setUp()
 
+    def test_plaintext_wildcard_requires_explicit_local_container_mode(self) -> None:
+        with self.assertRaises(ValueError):
+            _ = self.endpoint.attach_listener(host="0.0.0.0", port=0)
+        with self.assertRaises(ValueError):
+            _ = self.endpoint.attach_listener(host="127.0.0.1", port=0, local_container=True)
+        listener = self.endpoint.attach_listener(host="0.0.0.0", port=0, local_container=True)
+        listener.shutdown()
+
     def test_loopback_listener_serves_pairing_and_execution(self) -> None:
         listener = self.endpoint.attach_listener(host="127.0.0.1", port=0)
         self.addCleanup(listener.shutdown)
