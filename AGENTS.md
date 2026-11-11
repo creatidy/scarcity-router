@@ -357,16 +357,23 @@ a substitute for ordinary execution diagnosis.
 
 ## Validation gate
 
-Run the smallest relevant checks during implementation and the full gate
-before committing or opening/updating a PR:
+Run focused checks relevant to the change during implementation, including
+whitespace checks before committing. The complete gate runs in canonical CI
+for the exact committed source or explicitly identified merge tree before
+integration. A local full run is appropriate for diagnosis or when CI cannot
+produce a required proof; do not claim CI passed or waive platform-specific
+evidence because a local substitute passed. See D-088 and
+`.kilo/rules/validation.md` for source identity, coverage and evidence rules.
+The current full gate includes:
 
 ```bash
 uv sync --only-dev
 make check
-uv run basedpyright
 git diff --check
 ```
 
+`make check` includes `uv run basedpyright`; the current CI workflow also
+invokes it separately. Package checks and other applicable gates remain required.
 Python type checking uses the repo-managed `basedpyright` through `uv`; plain
 `pyright`, weakened rules, exclusions and baselines are not substitutes. Fix
 the underlying diagnostic. Tests must be deterministic, behavior-focused and

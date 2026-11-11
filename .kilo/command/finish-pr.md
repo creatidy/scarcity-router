@@ -24,10 +24,11 @@ management; it does not self-review or invoke hidden inference.
    authority is not repaired by a local hash or an agent-written receipt.
 3. Understand/reproduce genuine accepted-scope findings, apply the smallest fix
    and meaningful deterministic tests. Follow bounded secret-safe recovery; ask
-   only genuine owner-controlled decisions. Run `uv sync --only-dev`, focused
-   checks, `make check`, `uv run basedpyright`, `make package-check` where relevant,
-   and working/staged whitespace checks. Inspect the complete intended/base delta,
-   commit explicit files under the owner identity and push the same PR normally.
+   only genuine owner-controlled decisions. Run focused checks and working/staged
+   whitespace checks under `.kilo/rules/validation.md`. Commit explicit files
+   under the owner identity, push the same PR normally and require full CI evidence
+   for the exact source/merge tree; use a local full run for diagnosis or missing
+   CI proof. Inspect the complete intended/base delta.
 4. If independent review is pending, prepare concise instructions directly: exact
    Issue/PR acceptance and legitimate owner-decision references, frozen HEAD/base/
    merge-base, complete canonical compact Git diff and changed regions with useful

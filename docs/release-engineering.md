@@ -120,6 +120,17 @@ and install subprocesses run on a deliberate environment allowlist, never a
 wholesale ambient environment. It contacts no provider and never publishes
 anything.
 
+Under D-088, pre-integration acceptance verifies the actual CI checkout commit
+or explicitly identified merge tree, every required step and current HEAD/base;
+the check name or a green badge alone does not establish those facts. The
+current workflow does not add its own explicit checkout-SHA assertion step;
+inspect the exact run's available checkout evidence and report missing identity
+as UNPROVED rather than assuming which revision ran. Its `git diff --check`
+checks the checkout's working-tree diff, not by itself the complete committed
+PR diff. The separate `uv run basedpyright` step currently repeats type checking
+already included in `make check`; this description does not claim that duplicate
+has been removed.
+
 Determinism and supply-chain discipline:
 
 - the CI interpreter is pinned (Python 3.12 via `uv`);

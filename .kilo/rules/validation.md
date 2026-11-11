@@ -5,9 +5,16 @@ it never authorizes a hidden model call.
 
 ## Required Checks
 
-- Start with focused deterministic tests, then run `uv sync --only-dev`, `make
-  check`, `uv run basedpyright`, `make package-check` when packaging/workflow is
-  affected, `git diff --check` and staged whitespace before commit/PR update.
+- During development run focused deterministic tests and checks appropriate to
+  the change, plus working/staged whitespace checks before commit. Canonical CI
+  runs the full required gate for the exact committed source or explicitly
+  identified merge tree before integration: `uv sync --only-dev`, `make check`
+  (including `uv run basedpyright`), `git diff --check`, and the applicable
+  `make package-check` and other acceptance gates. Local full runs are for
+  diagnosis or when CI cannot supply a required proof, not a routine duplicate
+  before every commit.
+  A local substitute must actually prove the missing boundary; it cannot turn a
+  missing CI result or platform-specific check into a claimed CI/platform PASS.
 - Use repo-managed basedpyright through uv; no plain pyright, weakened rules,
   exclusions or baselines. Preserve the repository gate; no unrelated lint gate.
 - Provider/capacity changes need redacted representative fixture/contract tests;
@@ -19,6 +26,33 @@ it never authorizes a hidden model call.
   and minimal variables, not ambient credentials. Do not mount/copy credential
   directories or print secret values. Imports remain safe without provider access.
 
+## Test Evidence And Efficiency
+
+- Define each scenario once where practical and do not run it twice without a
+  distinct evidentiary purpose. Preserve the union of assertions when removing
+  actual duplicates; checkout, installed wheel, sdist rebuild, image, upgrade,
+  and native-platform boundaries may require separate runs. Do not remove a
+  boundary merely because the scenario text is similar. Avoid separately
+  hand-copying the same case matrix between a test runner and package script;
+  execute the shared definition in deliberately chosen environments instead.
+- Reuse an immutable built artifact within one run only when its identity,
+  provenance and required boundary match. Keep mutable databases, directories,
+  ports, process identities and fixtures independent unless shared state is the
+  behavior under test. Preserve installed-runtime proof without undeclared
+  dependencies; verify installed artifact origin in workers and representative
+  subprocesses as well as the parent when those processes run installed tests.
+- Parallelize only after verifying isolation, preferably with processes. Serialize
+  or truly isolate global host state, shared services, markers and signals. Do
+  not mask races with larger timeouts or automatic retries. For any phased or
+  sharded suite, automatically verify complete, disjoint case identities including
+  parameterized cases, not merely matching counts; report any unsupported case.
+- For performance comparisons record wall-clock, principal phases, run/skip
+  counts and runner conditions before and after. A single timing is an observation,
+  not a future guarantee. Report unavailable native, security, external,
+  failure-recovery or other required proof as UNPROVED, not PASS.
+- These are prospective design and evidence requirements, not a claim that the
+  existing CI, installed-artifact tests or test partitioning already meet them.
+
 ## Review And Handoff
 
 - Inspect status, intended/full base diff, recent commit style, exact refs/ancestry
@@ -28,6 +62,11 @@ it never authorizes a hidden model call.
   Use actual Git objects and complete compact diff/changed-source regions with
   useful context. No LLM summaries or silent hunk omission. Additional unchanged
   context is a material reviewer judgment, not blanket full-file bureaucracy.
+- Verify the successful CI run's actual checked-out commit or explicit merge tree,
+  all required step results and current HEAD/base before integration; a green badge
+  without source identity is insufficient. An independent reviewer inspects the
+  code, assertions and relevant exact-run evidence, and runs targeted checks when
+  needed; a second full CI-equivalent run is not automatic.
 - Independent review is a fresh separate read-only USER-VISIBLE Kilo session.
   Authorized `/loop` and `/finish-pr` orchestrators start and collect it through
   native Kilo session management; do not require the owner to start it or relay
