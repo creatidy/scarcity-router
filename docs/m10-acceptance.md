@@ -25,6 +25,41 @@ identity/authority/protocol proofs; #185 version/migration conformance. Green
 synthetic tests or a documentary review do not establish READY_FOR_LIVE_TASK,
 full product completion or permission to run these future acceptance steps.
 
+## #227 Composed Rehearsal
+
+This is an offline fixture report, not a live or installed-client acceptance.
+The source-bound model capability and output ceiling used below are synthetic;
+they are not a claim about any real provider model or an installed MI producer.
+
+| Evidence | Status | Boundary |
+| --- | --- | --- |
+| Tier 1 generic protocol fixtures | PASS (historical) | #133 family; no live client implied. |
+| Tier 2 coding-harness-shaped request | PASS (synthetic) | `tests/test_e2e_sources_acceptance.py::SourceUpgradeAcceptanceTests::test_combined_logical_tool_budget_rehearsal`: authenticated public chat boundary, discovered source, verified-TLS worker, synthetic capability evidence and fake Codex app server. A bare model, exact `high` effort, 128,000 output budget and client-owned tool continuation share one turn; audit selected and executed targets agree. The same fixture checks restricted discovery and an exact pin. The non-binding output budget is normalized; it is not an enforced backend limit. |
+| Tier 3 actual ZCode, Kilo and Cline clients | NOT LIVE VERIFIED | The request is harness-shaped, not a real invocation of any of these clients. Existing ZCode backend tests exercise a different worker-owned execution lane and do not establish client compatibility. |
+| Installed full journey | NOT LIVE VERIFIED | Package checks and earlier TLS, pairing, service and execution fixtures are separate evidence, not one installed end-to-end walk. Real Windows, live Codex subscription and host diversity remain owner-side external acceptance gates below. |
+| #224 transport | OPEN | Verified TLS remains the supported path; unresolved Tier-B, origin migration and certificate lifecycle must not be inferred complete from this rehearsal. |
+
+The synthetic fixture does not install a service or authenticate a real
+execution source. No release, signing, deployment or live inference is part
+of this evidence. Independent technical and UX review, CI for the exact PR
+revision and the full #227 closeout remain separate delivery gates.
+
+The supported verified-TLS operator journey is documented in the README's
+execution-gateway section. Evidence remains split across these boundaries:
+
+| Step | Existing evidence and limitation |
+| --- | --- |
+| Install server and worker | `tools/package_check.py` exercises a temporary wheel install and same-version replacement; it does not prove a published artifact or a fresh OS. |
+| Configure TLS, start server, pair worker | `tests/test_tls_acceptance.py` and the composed source fixture exercise synthetic certificates, a running server and verified-TLS pairing; no real network or certificate issuance is claimed. |
+| Authenticate source and install worker service | The fake source reports synthetic authentication. `tests/test_worker_service.py` tests generated service behavior with recording tools; neither a real login nor a real service installation is performed. |
+| Discover, expose, issue key, configure client and execute | The new rehearsal exercises discovery, source policy, key issuance and synthetic HTTP execution; its in-process client is not an installed coding harness. |
+
+The remaining manual operations include supplying and renewing TLS material,
+issuing a pairing code and client key, and completing a provider-managed login.
+These are security or deployment steps, not evidence of a completed live
+walk. No client-name branching was found in `routing_core.py` in the #227
+source inspection; that inspection is not a claim about all external clients.
+
 ## Platform support table
 
 | Capability | Status | Evidence |

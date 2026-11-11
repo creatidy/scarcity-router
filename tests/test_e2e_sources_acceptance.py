@@ -275,6 +275,93 @@ def _registry_for(
 class SourceUpgradeAcceptanceTests(SourcesComposedWorld):
     """T0 → T1: an exact new-model grant is required."""
 
+    def test_combined_logical_tool_budget_rehearsal(self) -> None:
+        from dataclasses import replace
+        from scarcity_router.selection_app import load_configured_artifacts
+        from scarcity_router.selection_types import ModelCatalog
+        from tests.test_logical_model_resolution import _catalog_entry  # pyright: ignore[reportPrivateUsage] - shared synthetic fixture
+        from tests.m10_codex_fixtures import trace_events, trace_methods, trace_request
+
+        _, profiles, version = load_configured_artifacts(
+            self.plane._catalog_path, self.plane._model_policy_path  # pyright: ignore[reportPrivateUsage]
+        )
+        entry = replace(_catalog_entry("openai", "gpt-6-sol", "high"),
+                        capacity_binding_resources=(DERIVED_SOL,))
+        catalog = ModelCatalog(None, None, (entry,))
+        # Synthetic source-bound capability evidence, not a live model claim.
+        patcher = mock.patch("scarcity_router.control_api.load_configured_artifacts",
+                             return_value=(catalog, profiles, version))
+        _ = patcher.start()
+        self.addCleanup(patcher.stop)
+        scenario = _scenario(("gpt-6-sol", "gpt-daybreak-blue-latest"))
+        scenario["turn"] = {"dynamicTool": "synthetic_lookup", "deltas": ["Checking "], "postDeltas": ["Done."]}
+        worker = self.start_source_worker(scenario)
+        worker.start()
+        try:
+            self.wait_for_derived(DERIVED_SOL)
+            now = datetime.now(timezone.utc)
+            runtime_version = self.source_view(SOURCE_ID)["runtime_version"]
+            status, payload = self.admin_post(f"/control/sources/{SOURCE_ID}/model-policy", {
+                "allowed_models": ["gpt-6-sol"], "context_evidence": [{
+                    "model": "gpt-6-sol", "variant": "high", "runtime_version": runtime_version,
+                    "input_tokens": 272_000, "evidence_ref": "local:synthetic-adapter-test",
+                    "verified_at": format_utc(now - timedelta(minutes=1)),
+                    "valid_until": format_utc(now + timedelta(hours=1)),
+                }],
+            })
+            self.assertEqual(200, status, payload)
+            tools: list[dict[str, object]] = [{"type": "function", "function": {
+                "name": "synthetic_lookup", "parameters": {"type": "object", "properties": {}},
+            }}]
+            headers = {"Authorization": f"Bearer {self.client_key}"}
+            request: dict[str, object] = {
+                "model": "gpt-6-sol", "reasoning_effort": "high", "max_completion_tokens": 128_000,
+                "messages": [{"role": "user", "content": PROMPT}], "tools": tools,
+            }
+            status, payload, _headers = self.exchange("POST", "/v1/chat/completions", request, headers=headers, timeout=60)
+            self.assertEqual(200, status, payload)
+            choice = cast("dict[str, object]", cast("list[object]", cast("dict[str, object]", payload)["choices"])[0])
+            self.assertEqual("tool_calls", choice["finish_reason"])
+            message = cast("dict[str, object]", choice["message"])
+            calls = cast("list[dict[str, object]]", message["tool_calls"])
+            token = cast("str", calls[0]["id"])
+            continuation = {"model": "gpt-6-sol", "reasoning_effort": "high", "messages": [
+                {"role": "user", "content": PROMPT}, message,
+                {"role": "tool", "tool_call_id": token, "content": "synthetic result"},
+            ], "tools": tools}
+            status, payload, _headers = self.exchange("POST", "/v1/chat/completions", continuation, headers=headers, timeout=60)
+            self.assertEqual(200, status, payload)
+            choice = cast("dict[str, object]", cast("list[object]", cast("dict[str, object]", payload)["choices"])[0])
+            self.assertEqual("Done.", cast("dict[str, object]", choice["message"])["content"])
+            records = [record for record in self.audit_records() if record.get("executed_target") is not None]
+            self.assertEqual(2, len(records))
+            for record in records:
+                self.assertEqual(record["selected_target"], record["executed_target"])
+                target = cast("dict[str, object]", record["executed_target"])
+                self.assertEqual((DERIVED_SOL, "gpt-6-sol", "high"), (target["resource_id"], target["model"], target["variant"]))
+            self.assertEqual(records[0]["decision_id"], records[1]["decision_id"])
+            self.assertIn("output_limit_normalized", cast("list[str]", records[0]["reason_codes"]))
+            self.assertEqual(1, trace_methods(worker.trace_path).count("turn/start"))
+            turn = trace_request(worker.trace_path, "turn/start")
+            assert turn is not None
+            self.assertEqual("high", turn["effort"])
+            answers = trace_events(worker.trace_path, "tool_call_answer")
+            self.assertEqual(1, len(answers))
+            self.assertIn("synthetic result", json.dumps(answers[0]))
+            self.assertNotIn("gpt-daybreak-blue-latest", json.dumps(sorted(self.derived_resource_ids())))
+            status, payload, _headers = self.exchange("POST", "/v1/chat/completions", {
+                "model": "gpt-daybreak-blue-latest", "messages": [{"role": "user", "content": PROMPT}],
+            }, headers=headers, timeout=60)
+            self.assertNotEqual(200, status, payload)
+            self.assertIsNone(self.audit_records()[-1]["executed_target"])
+            status, payload, _headers = self.exchange("POST", "/v1/chat/completions", {
+                "model": f"sr-pin:{DERIVED_SOL}/openai/gpt-6-sol/high",
+                "messages": [{"role": "user", "content": PROMPT}],
+            }, headers=headers, timeout=60)
+            self.assertEqual(200, status, payload)
+        finally:
+            worker.stop()
+
     def test_granted_model_executes_only_after_exact_context_attestation(self) -> None:
         # T0: the runtime exposes gpt-6-sol.
         worker = self.start_source_worker(_scenario(("gpt-6-sol",)))
