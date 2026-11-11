@@ -39,26 +39,41 @@ they are not a claim about any real provider model or an installed MI producer.
 | Installed full journey | NOT LIVE VERIFIED | Package checks and earlier TLS, pairing, service and execution fixtures are separate evidence, not one installed end-to-end walk. Real Windows, live Codex subscription and host diversity remain owner-side external acceptance gates below. |
 | #224 transport | OPEN | Verified TLS remains the supported path; unresolved Tier-B, origin migration and certificate lifecycle must not be inferred complete from this rehearsal. |
 
-The synthetic fixture does not install a service or authenticate a real
-execution source. No release, signing, deployment or live inference is part
-of this evidence. Independent technical and UX review, CI for the exact PR
-revision and the full #227 closeout remain separate delivery gates.
+### Offline Journey Evidence
 
-The supported verified-TLS operator journey is documented in the README's
-execution-gateway section. Evidence remains split across these boundaries:
+The README's execution-gateway section describes the supported verified-TLS
+journey. The following linked evidence covers its steps as a suite of
+composed and boundary tests, not as one installed-system run. All test
+credentials, certificates and backend responses are synthetic.
 
-| Step | Existing evidence and limitation |
-| --- | --- |
-| Install server and worker | `tools/package_check.py` exercises a temporary wheel install and same-version replacement; it does not prove a published artifact or a fresh OS. |
-| Configure TLS, start server, pair worker | `tests/test_tls_acceptance.py` and the composed source fixture exercise synthetic certificates, a running server and verified-TLS pairing; no real network or certificate issuance is claimed. |
-| Authenticate source and install worker service | The fake source reports synthetic authentication. `tests/test_worker_service.py` tests generated service behavior with recording tools; neither a real login nor a real service installation is performed. |
-| Discover, expose, issue key, configure client and execute | The new rehearsal exercises discovery, source policy, key issuance and synthetic HTTP execution; its in-process client is not an installed coding harness. |
+| Journey step | Deterministic evidence | Boundary not proved |
+| --- | --- | --- |
+| Build and install server and worker | `make package-check` builds wheel/sdist, installs the wheel in an isolated `uv tool` environment, checks entry points, starts the installed REST surface and checks replacement/uninstall retention. | No published artifact, new OS or installed execution gateway. |
+| Configure TLS and start server | `tests/test_tls_acceptance.py::ComposedServerTlsTests` serves verified TLS and rejects a wrong CA, expired certificate, wrong hostname and plaintext. | Loopback fixtures, not certificate issuance or a deployed container. |
+| Bootstrap administrator and issue pairing code | `tests/test_e2e_acceptance.py::OnboardingTests` and `tests/test_e2e_codex_acceptance.py::PackagedWorkerPathTests::test_console_script_worker_discovers_codex_pairs_and_serves` exercise onboarding and one-time pairing. | The latter is a packaged-style subprocess from the checkout, not the installed wheel. |
+| Pair worker and authenticate source | The packaged-style test pairs over verified TLS, starts the worker and receives the fake Codex `chatgpt` authentication verdict. `CodexCompositionTests::test_auth_verdicts_drive_eligibility_through_snapshots` tests refusal of an unverified verdict. | Neither a real account login nor a subscription is used. |
+| Install worker service | `tests/test_worker_service.py::InstallLifecycleTests::test_install_writes_unit_then_reloads_enables_and_starts` checks the generated unit and recorded systemd calls; `test_install_output_and_unit_never_leak_credential_material` checks the credential boundary. | Systemd and the worker executable are fakes; the unit is not run on a host. |
+| Discover and expose logical model | `tests/test_e2e_sources_acceptance.py::SourceUpgradeAcceptanceTests::test_combined_logical_tool_budget_rehearsal` discovers the source through worker reports, grants its model and sends the bare logical ID; `UnknownAndRestrictedModelsTests` checks restricted discovery. | The capability evidence supplied to the combined fixture is synthetic. |
+| Issue client key, configure client and execute | `tests/test_e2e_acceptance.py::ClientKeyTests::test_scenario_04_client_key_creation_through_control_surface` and the combined rehearsal use issued credentials and the public HTTP boundary; the packaged-style test also executes a pin. | The client is a test HTTP client, not an installed coding harness. |
+
+No release, signing, deployment or live inference is part of this evidence.
 
 The remaining manual operations include supplying and renewing TLS material,
 issuing a pairing code and client key, and completing a provider-managed login.
 These are security or deployment steps, not evidence of a completed live
 walk. No client-name branching was found in `routing_core.py` in the #227
 source inspection; that inspection is not a claim about all external clients.
+
+### #227 Closeout Record
+
+| Item | Result and provenance |
+| --- | --- |
+| Scope and ownership | #227 receives composed acceptance; #183 and #186 are closed producer deliveries, #226 owns administrator UX, and #224 retains open transport work. Historical #141 is excluded, not reopened. |
+| PR and reviewed source | PR #266, review #1/10: `REQUEST_CHANGES` at head `ff9579224a1e5fcbb6a5d27f774e71db850a998f`, base/merge-base `9f034c5b98c3021e2347cd43181810ccda6ac49c`. Findings: missing journey evidence and closeout. This table and the journey mapping address those findings; they are not an independent verification. |
+| Validation | Forgejo CI #3632 passed on `ff9579224a1e5fcbb6a5d27f774e71db850a998f`; checkout, sync, tests/typecheck, separate basedpyright, whitespace and package checks were visible in the run UI. That result does not validate subsequent changes: current-head CI and fresh review remain required. |
+| External contracts | No external contract, authorization, provider or client interface change in PR #266. Synthetic capability injection is a test seam, not a new evidence source. |
+| Security review | Review #1 included the security dimension but did not approve; independent review of the current complete PR remains pending. D-081 reserves the comprehensive Daybreak audit for the frozen production-release candidate, not this PR. |
+| Unsupported and owner-side acceptance | Actual Windows package and service, live Codex subscription, distinct hosts/LAN, real client harnesses, publication and certificate lifecycle remain unverified or separately gated; see the external gates below and #224. No live compatibility, release or deployment is claimed. |
 
 ## Platform support table
 
