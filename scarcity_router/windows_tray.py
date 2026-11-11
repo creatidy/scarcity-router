@@ -450,18 +450,38 @@ def append_worker_log(state_dir: str | Path, lines: tuple[str, ...] | list[str])
     _ = _try_append_worker_log(state_dir, lines)
 
 
+_worker_log_lock = threading.Lock()
+_SAVE_OUTCOME_PREFIXES = (
+    "settings save committed",
+    "settings save failed (",
+    "settings dialog ended without confirmed result (",
+    "shutdown timed out; pending work is unconfirmed",
+)
+
+
 def _try_append_worker_log(state_dir: str | Path, lines: tuple[str, ...] | list[str]) -> bool:
     if not lines:
         return True
     log_path = Path(state_dir) / WORKER_LOG_NAME
-    try:
-        if log_path.exists() and log_path.stat().st_size > WORKER_LOG_MAX_BYTES:
-            log_path.unlink()
-        with log_path.open("a", encoding="utf-8") as handle:
-            for line in lines:
-                _ = handle.write(line.rstrip("\n") + "\n")
-    except OSError:
+    if not _worker_log_lock.acquire(timeout=1):
         return False
+    try:
+        try:
+            if log_path.exists() and log_path.stat().st_size > WORKER_LOG_MAX_BYTES:
+                last_outcome = ""
+                with log_path.open("r", encoding="utf-8", errors="replace") as handle:
+                    for line in handle:
+                        if line.startswith(_SAVE_OUTCOME_PREFIXES):
+                            last_outcome = line
+                with log_path.open("w", encoding="utf-8") as handle:
+                    _ = handle.write(last_outcome)
+            with log_path.open("a", encoding="utf-8") as handle:
+                for line in lines:
+                    _ = handle.write(line.rstrip("\n") + "\n")
+        except OSError:
+            return False
+    finally:
+        _worker_log_lock.release()
     return True
 
 

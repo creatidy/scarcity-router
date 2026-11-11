@@ -15,7 +15,7 @@ from typing import Protocol, cast, override
 from unittest.mock import patch
 
 from scarcity_router import windows_tray, worker_setup
-from scarcity_router.worker_client import open_worker_store
+from scarcity_router.worker_client import WorkerOrigin, WorkerRuntime, open_worker_store
 from scarcity_router.worker_local_store import WorkerLocalStore
 from tests.test_worker_first_run import (
     FakeRuntime,
@@ -52,6 +52,117 @@ def _dialog_class() -> type[_Dialog]:
 
 
 class PendingSaveTests(unittest.TestCase):
+    def test_quit_interrupts_real_runtime_send_and_delayed_connect(self) -> None:
+        for mode in ("send", "connect"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as parent:
+                self._exercise_runtime_io_quit(parent, mode)
+
+    def _exercise_runtime_io_quit(self, parent: str, mode: str) -> None:
+        ready, entered, release, transport_closed, quit_returned, finished = (
+            threading.Event() for _ in range(6)
+        )
+        actions: dict[str, object] = {}
+        result: queue.Queue[object] = queue.Queue()
+        sends: list[int] = []
+
+        class Transport:
+            def recv_exact(self, size: int) -> bytes | None:
+                _ = size
+                return None
+
+            def send_all(self, data: bytes) -> None:
+                sends.append(len(data))
+                entered.set()
+                if not release.wait(10):
+                    raise AssertionError("send release timed out")
+                raise ConnectionError("synthetic closed transport")
+
+            def close(self) -> None:
+                transport_closed.set()
+                if mode == "send":
+                    release.set()
+
+        transport = Transport()
+        store = open_store(parent)
+        store.save_identity(synthetic_identity())
+
+        def connect(origin: WorkerOrigin) -> Transport:
+            _ = origin
+            if mode == "connect":
+                entered.set()
+                if not release.wait(10):
+                    raise AssertionError("connect release timed out")
+            return transport
+
+        def runtime_factory() -> WorkerRuntime:
+            return WorkerRuntime(
+                origin=WorkerOrigin.parse(synthetic_identity().server_origin),
+                store=store,
+                connect_factory=connect,
+            )
+
+        def factory(model: windows_tray.TrayStateModel, opener: Callable[[], None], directory: Path, on_settings: Callable[[], None]) -> RecordingView:
+            view = recording_view_factory(RecordingView(), actions)(model, opener, directory, on_settings)
+            ready.set()
+            return view
+
+        def run() -> None:
+            try:
+                result.put(windows_tray.tray_main(["--state-dir", parent], view_factory=factory, runtime_factory=runtime_factory))
+            except BaseException as exc:
+                result.put(exc)
+            finally:
+                finished.set()
+
+        def quit_worker() -> None:
+            cast(windows_tray.TrayStateModel, actions["model"]).request_quit()
+            quit_returned.set()
+
+        main = threading.Thread(target=run)
+        quit_thread = threading.Thread(target=quit_worker)
+        main.start()
+        try:
+            self.assertTrue(ready.wait(10))
+            self.assertTrue(entered.wait(10))
+            quit_thread.start()
+            self.assertTrue(quit_returned.wait(2), "Quit blocked on network I/O")
+            if mode == "connect":
+                release.set()
+            self.assertTrue(finished.wait(10))
+            self.assertTrue(transport_closed.is_set())
+            self.assertEqual(0, result.get_nowait())
+            if mode == "connect":
+                self.assertEqual([], sends, "handshake started after Quit")
+        finally:
+            release.set()
+            if "model" in actions:
+                cast(windows_tray.TrayStateModel, actions["model"]).request_quit()
+            if quit_thread.ident is not None:
+                quit_thread.join(10)
+            main.join(10)
+            store.close()
+
+    def test_save_outcomes_survive_rotation_and_concurrent_logging(self) -> None:
+        for outcome in ("settings save committed", "settings save failed (WorkerSetupConfigError)"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as parent:
+                windows_tray.append_worker_log(parent, (outcome,))
+                barrier = threading.Barrier(5)
+
+                def log() -> None:
+                    _ = barrier.wait()
+                    windows_tray.append_worker_log(parent, ("x" * (windows_tray.WORKER_LOG_MAX_BYTES + 1),))
+                    windows_tray.append_worker_log(parent, ("shutdown diagnostics",))
+
+                threads = [threading.Thread(target=log) for _ in range(4)]
+                for thread in threads:
+                    thread.start()
+                _ = barrier.wait()
+                for thread in threads:
+                    thread.join(10)
+                    self.assertFalse(thread.is_alive())
+                text = (Path(parent) / windows_tray.WORKER_LOG_NAME).read_text()
+                self.assertIn(outcome, text)
+
     def test_save_restarts_after_terminal_state_and_during_transition(self) -> None:
         for mode in ("exhausted", "error", "transition"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as parent:
