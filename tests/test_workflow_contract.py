@@ -320,6 +320,29 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("explicit `/loop`", text(".kilo/rules/20-forgejo-mcp.md"))
         self.assertIn("STOP_AND_ASK stops the whole invocation", text(".kilo/rules/30-implementation-discipline.md"))
 
+    def test_practical_review_scope_ci_and_optional_checks(self) -> None:
+        reviewer = text(".kilo/agents/pr-reviewer.md")
+        for requirement in (
+            "every changed hunk",
+            "issue requirements, accepted decisions, producer contracts and test adequacy",
+            "Scope provenance/license verification to material claims and reuse affected by this PR",
+            "do not audit unrelated dependencies",
+            "complete producer environment",
+            "Independently verify authoritative CI status for the exact reviewed HEAD",
+            "including applicable required checks",
+            "missing, stale, pending, failed or ambiguous status",
+            "unavailable job detail alone does not invalidate the status or require COMMENT",
+            "Do not claim unobserved steps or waive mandatory validation",
+            "Reviewer full-suite reruns are not required",
+            "Targeted local investigations are optional",
+            "An unavailable optional check does not automatically require COMMENT",
+            "unresolved material uncertainty still prevents APPROVE",
+            "Implementation validation remains mandatory",
+            "Mandatory security/producer/release gates remain binding",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, reviewer)
+
     def test_final_command_inventory(self) -> None:
         self.assertEqual(
             sorted(path.name for path in (ROOT / ".kilo/command").iterdir()),

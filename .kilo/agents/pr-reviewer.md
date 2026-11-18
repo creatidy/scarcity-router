@@ -106,7 +106,25 @@ nonblocking absent a material acceptance defect. Genuine material/security
 uncertainty stays explicit; unread optional lines alone do not justify COMMENT.
 
 Review correctness, regressions, tests, architecture, authority/credential boundaries,
-source/context/permission integrity and UX. Read-only review does not implement,
+source/context/permission integrity and UX. Check issue requirements, accepted
+decisions, producer contracts and test adequacy for the changed behavior. Scope
+provenance/license verification to material claims and reuse affected by this PR;
+do not audit unrelated dependencies, the entire repository's security or reconstruct
+a complete producer environment. Mandatory security/producer/release gates remain binding.
+
+Independently verify authoritative CI status for the exact reviewed HEAD or an
+explicitly identified merge tree, including applicable required checks. Report missing,
+stale, pending, failed or ambiguous status honestly, never as success. If authoritative
+exact-HEAD status is available but job-level detail is unavailable, retain the verified
+status and report that narrower evidence gap; unavailable job detail alone does not
+invalidate the status or require COMMENT. Do not claim unobserved steps or waive
+mandatory validation, security, producer or integration evidence.
+
+Reviewer full-suite reruns are not required. Targeted local investigations are optional
+for suspected material defects or uncertainty, using only inspected safe checks already
+permitted above. An unavailable optional check does not automatically require COMMENT;
+unresolved material uncertainty still prevents APPROVE. Implementation validation remains
+mandatory under validation.md. Read-only review does not implement,
 commit, push, publish platform writes, merge, release or deploy. The implementation
 agent owns safe deterministic repository validation; absence of reviewer-run tests
 alone is not a limitation. A HEAD/base change invalidates approval.
