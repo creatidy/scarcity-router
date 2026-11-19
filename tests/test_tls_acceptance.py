@@ -25,12 +25,16 @@ import socket
 import ssl
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from typing import cast, override
+from unittest.mock import patch
 
 from tests.gateway_fixtures import build_registry
 from tests.m10_fixtures import RealTimeServerHarness, TlsMaterials
+from scarcity_router.worker_endpoint import WorkerEndpoint, build_tls_context
+from scarcity_router.worker_identity_store import WorkerIdentityStore
 
 REPO = Path(__file__).resolve().parents[1]
 PRODUCT_PACKAGE = REPO / "scarcity_router"
@@ -144,6 +148,41 @@ class WorkerTlsVerificationTests(unittest.TestCase):
         context = tls_context_for_worker()
         self.assertTrue(context.verify_mode in (ssl.CERT_REQUIRED,))
         self.assertTrue(context.check_hostname)
+
+    def test_listener_shutdown_during_tls_handshake_drops_pending_connection(self) -> None:
+        tls = TlsMaterials()
+        self.addCleanup(tls.cleanup)
+        context = build_tls_context(str(tls.server_cert), str(tls.server_key))
+        entering_handshake = threading.Event()
+        handshake = ssl.SSLSocket.do_handshake
+
+        def observed_handshake(sock: ssl.SSLSocket, block: bool = False) -> None:
+            if sock.context is context:
+                entering_handshake.set()
+            handshake(sock, block)
+
+        with tempfile.TemporaryDirectory() as parent:
+            store = WorkerIdentityStore(f"{parent}/ids.db")
+            self.addCleanup(store.close)
+            endpoint = WorkerEndpoint(
+                identity_store=store, registry=build_registry(), configured_owner=lambda _: None,
+            )
+            listener = endpoint.attach_listener(port=0, tls_context=context)
+            self.addCleanup(listener.shutdown)
+            self.addCleanup(endpoint.close_all_sessions)
+            with patch.object(ssl.SSLSocket, "do_handshake", observed_handshake):
+                listener.serve_in_background()
+                thread = listener._accept_thread  # pyright: ignore[reportPrivateUsage]
+                assert thread is not None
+                with socket.create_connection(("127.0.0.1", listener.bound_port), timeout=2) as peer:
+                    # TCP connected, but deliberately no TLS ClientHello.
+                    self.assertTrue(entering_handshake.wait(timeout=2))
+                    started = time.monotonic()
+                    listener.shutdown()
+                    self.assertLess(time.monotonic() - started, 2.0)
+                    self.assertFalse(thread.is_alive())
+                    self.assertEqual(b"", peer.recv(1))
+                self.assertEqual(0, endpoint.session_count())
 
     def test_pair_over_verified_tls_succeeds_with_the_right_ca(self) -> None:
         # Covered end to end in test_e2e_execution (scenario 8): the

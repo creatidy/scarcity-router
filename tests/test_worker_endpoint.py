@@ -1,8 +1,7 @@
 """Worker-protocol endpoint tests (M05): pairing, auth, reports, dispatch.
 
-All sessions run over in-memory transports against the real endpoint
-code; the only sockets in this file belong to nothing (no listener is
-started). Clocks are injected or frozen.
+Sessions use in-memory transports or real loopback sockets. Clocks are
+injected or frozen except when measuring shutdown.
 """
 
 from __future__ import annotations
@@ -14,6 +13,7 @@ import time
 import unittest
 from typing import cast, override
 from collections.abc import Callable
+from unittest.mock import patch
 
 from tests.worker_fixtures import (
     FrozenMonotonic,
@@ -509,6 +509,40 @@ class ListenerTests(EndpointTestCase):
             _ = self.endpoint.attach_listener(host="127.0.0.1", port=0, local_container=True)
         listener = self.endpoint.attach_listener(host="0.0.0.0", port=0, local_container=True)
         listener.shutdown()
+
+    def test_shutdown_while_accept_is_waiting_without_workers(self) -> None:
+        port = 0
+        for _ in range(3):
+            endpoint = WorkerEndpoint(
+                identity_store=self.store, registry=self.registry, configured_owner=self.owners.get,
+            )
+            listener = endpoint.attach_listener(port=port)
+            self.addCleanup(listener.shutdown)
+            port = listener.bound_port
+            entering_accept = threading.Event()
+            accept = socket.socket.accept
+            listening_socket = listener._server_socket  # pyright: ignore[reportPrivateUsage]
+
+            def observed_accept(sock: socket.socket) -> tuple[socket.socket, object]:
+                if sock is listening_socket:
+                    entering_accept.set()
+                return accept(sock)
+
+            with patch.object(socket.socket, "accept", observed_accept):
+                listener.serve_in_background()
+                thread = listener._accept_thread  # pyright: ignore[reportPrivateUsage]
+                assert thread is not None
+                self.assertTrue(entering_accept.wait(timeout=2))
+                started = time.monotonic()
+                listener.shutdown()
+                elapsed = time.monotonic() - started
+                self.assertLess(elapsed, 2.0)
+                self.assertFalse(thread.is_alive())
+            self.assertEqual(0, endpoint.session_count())
+            with socket.socket() as probe:
+                probe.settimeout(1)
+                with self.assertRaises(ConnectionRefusedError):
+                    probe.connect(("127.0.0.1", port))
 
     def test_loopback_listener_serves_pairing_and_execution(self) -> None:
         listener = self.endpoint.attach_listener(host="127.0.0.1", port=0)

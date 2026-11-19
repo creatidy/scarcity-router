@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
@@ -24,10 +25,13 @@ from scarcity_router.control_api import ControlPlane
 from scarcity_router.control_server import main
 from scarcity_router.gateway_server import GatewayHTTPServer
 from scarcity_router.resource_state import ResourceIdentity, ResourceRegistration
-from scarcity_router.server_config import ResourceConfig, ServerConfiguration
+from scarcity_router.server_config import ResourceConfig, ServerConfiguration, SourceConfig
 from scarcity_router.server_ownership import ServerOwnership
 from scarcity_router.server_store import ServerStore, ServerStoreError
 from scarcity_router.control_api import hash_token
+from scarcity_router.worker_identity_store import WorkerIdentityStore, default_worker_store_path
+from scarcity_router.worker_protocol import HelloAckMessage, SocketTransport
+from tests.worker_fixtures import ScriptedWorker
 
 
 @final
@@ -217,9 +221,12 @@ class OwnershipLifecycleTests(unittest.TestCase):
 class ServerChild:
     """Actual CLI process; output reader provides bounded, portable readiness."""
 
-    def __init__(self, data: Path, home: Path) -> None:
+    def __init__(self, data: Path, home: Path, *, worker_listener: bool = False) -> None:
+        args = [sys.executable, "-m", "scarcity_router.control_server", "--data-dir", str(data), "--port", "0"]
+        if worker_listener:
+            args += ["--worker-listen-port", "0"]
         self.process: subprocess.Popen[str] = subprocess.Popen(
-            [sys.executable, "-m", "scarcity_router.control_server", "--data-dir", str(data), "--port", "0"],
+            args,
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, env={"PATH": os.environ.get("PATH", ""), "HOME": str(home)},
         )
@@ -233,12 +240,12 @@ class ServerChild:
             self.lines.put(line)
         self.lines.put(None)
 
-    def ready(self) -> int | None:
+    def ready(self, pattern: str = r"listening on http://127\.0\.0\.1:(\d+)") -> int | None:
         while True:
             line = self.lines.get(timeout=10)
             if line is None:
                 return None
-            match = re.search(r"listening on http://127\.0\.0\.1:(\d+)", line)
+            match = re.search(pattern, line)
             if match:
                 return int(match.group(1))
 
@@ -375,3 +382,65 @@ class CrossProcessTests(unittest.TestCase):
             _, next_port = self.start(data, root, processes)
             replay = self.exchange(next_port, "/observer/v1/replay", {"cursor": before["cursor"]})
             self.assertEqual("epoch_mismatch", replay["resync_reason"])
+
+    @unittest.skipUnless(os.name == "posix", "POSIX interrupt for graceful CLI shutdown")
+    def test_shutdown_with_authenticated_idle_worker_preserves_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, ExitStack() as processes:
+            root = Path(temporary)
+            data = root / "data"
+            self.prepare(data)
+            identity_store = WorkerIdentityStore(default_worker_store_path(data))
+            try:
+                code = identity_store.begin_pairing(label="idle shutdown test")
+                worker_id, credential = identity_store.redeem_pairing_code(code.pairing_code)
+            finally:
+                identity_store.close()
+            store = ServerStore.open(data)
+            try:
+                source = SourceConfig("owned", "codex_subscription", "Owned", worker_id)
+                at = "2026-11-08T00:00:00.000Z"
+                store.save_configuration_document(ServerConfiguration(sources=(source,)).to_document(), at=at)
+                store.append_audit_record(
+                    payload={"request_id": "synthetic-before-shutdown"},
+                    recorded_at=at, max_records=10, max_age_seconds=3600,
+                )
+            finally:
+                store.close()
+
+            for _ in range(2):  # Restart on the same durable state and reauthenticate.
+                child = ServerChild(data, root, worker_listener=True)
+                _ = processes.callback(child.close)
+                http_port = child.ready()
+                worker_port = child.ready(r"worker-protocol listener on srw://127\.0\.0\.1:(\d+)")
+                assert http_port is not None and worker_port is not None
+                with socket.create_connection(("127.0.0.1", worker_port), timeout=2) as raw:
+                    worker = ScriptedWorker(SocketTransport(raw, recv_timeout_seconds=2))
+                    self.assertIsInstance(worker.send_hello(worker_id, credential), HelloAckMessage)
+                    connected = self.exchange(http_port, "/observer/v1/snapshot")
+                    cursor = cast(dict[str, object], connected["cursor"])
+                    snapshot = cast(dict[str, object], connected["snapshot"])
+                    sources = cast(list[dict[str, object]], snapshot["sources"])
+                    self.assertIs(True, sources[0]["worker_connected"])
+                    started = time.monotonic()
+                    child.process.send_signal(signal.SIGINT)
+                    self.assertEqual(0, child.process.wait(timeout=3))
+                    self.assertLess(time.monotonic() - started, 3.0)
+                    self.assertIsNone(worker.read_raw())
+                for port in (http_port, worker_port):
+                    with socket.socket() as probe:
+                        probe.settimeout(1)
+                        with self.assertRaises(ConnectionRefusedError):
+                            probe.connect(("127.0.0.1", port))
+                store = ServerStore.open(data)
+                try:
+                    self.assertEqual(1, store.audit_record_count())
+                    # EOF alone would also result from forced process exit;
+                    # the durable offline event proves session cleanup ran.
+                    _, events, reason = store.read_producer_events(cast(str, cursor["epoch"]), cast(int, cursor["sequence"]))
+                    self.assertIsNone(reason)
+                    self.assertEqual(1, len(events))
+                    offline = cast(dict[str, object], json.loads(events[0][1]))
+                    offline_sources = cast(list[dict[str, object]], offline["sources"])
+                    self.assertIs(False, offline_sources[0]["worker_connected"])
+                finally:
+                    store.close()
