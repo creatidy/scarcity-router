@@ -530,9 +530,19 @@ class WorkerSession:
     def _pair(self, request: PairRequestMessage) -> None:
         endpoint = self._endpoint
         try:
-            worker_id, credential = endpoint.identity_store.redeem_pairing_code(
-                request.pairing_code
-            )
+            with endpoint.publication_lock:
+                if self._state.closed:
+                    return
+                worker_id, credential = endpoint.identity_store.redeem_pairing_code(
+                    request.pairing_code
+                )
+                endpoint.connection_changed()
+                with endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+                    self._state.worker_id = worker_id
+                    self._state.authenticated = True
+                    endpoint._sessions[id(self)] = self  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+                endpoint.connection_changed()
+                endpoint.record_connected(worker_id)
         except WorkerIdentityError as exc:
             code = {
                 ERR_PAIRING_INVALID: ERR_PAIRING_INVALID,
@@ -542,14 +552,6 @@ class WorkerSession:
             self._send_error(ErrorMessage(code=code, message=exc.message, fatal=True))
             self.close(note=f"pairing rejected: {exc.code}")
             return
-        with endpoint.publication_lock:
-            endpoint.connection_changed()
-            with endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
-                self._state.worker_id = worker_id
-                self._state.authenticated = True
-                endpoint._sessions[id(self)] = self  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
-            endpoint.connection_changed()
-        endpoint.record_connected(worker_id)
         self._state.writer.write_message(
             PairResultMessage(
                 negotiated_version=self._state.negotiated_version or WORKER_PROTOCOL_VERSION,
@@ -562,20 +564,24 @@ class WorkerSession:
     def _authenticate(self, hello: HelloMessage) -> None:
         endpoint = self._endpoint
         try:
-            endpoint.identity_store.authenticate(hello.worker_id, hello.credential)
+            # Do not let either close or revocation intervene between
+            # validating the credentials and activating the session.
+            with endpoint.publication_lock:
+                if self._state.closed:
+                    return
+                endpoint.identity_store.authenticate(hello.worker_id, hello.credential)
+                endpoint.connection_changed()
+                with endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+                    self._state.worker_id = hello.worker_id
+                    self._state.authenticated = True
+                    endpoint._sessions[id(self)] = self  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+                endpoint.connection_changed()
+                endpoint.record_connected(hello.worker_id)
         except WorkerIdentityError as exc:
             code = ERR_CREDENTIAL_REVOKED if exc.code == ERR_CREDENTIAL_REVOKED else ERR_UNAUTHORIZED
             self._send_error(ErrorMessage(code=code, message=exc.message, fatal=True))
             self.close(note=f"authentication rejected: {code}")
             return
-        with endpoint.publication_lock:
-            endpoint.connection_changed()
-            with endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
-                self._state.worker_id = hello.worker_id
-                self._state.authenticated = True
-                endpoint._sessions[id(self)] = self  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
-            endpoint.connection_changed()
-        endpoint.record_connected(hello.worker_id)
         self._state.writer.write_message(
             HelloAckMessage(
                 negotiated_version=self._state.negotiated_version or WORKER_PROTOCOL_VERSION,
@@ -1181,9 +1187,10 @@ class WorkerEndpoint:
 
     def revoke_worker(self, worker_id: str) -> None:
         """Revoke one device identity and close its live sessions now."""
-        self.identity_store.revoke(worker_id)
-        with self._lock:
-            sessions = [s for s in self._sessions.values() if s.worker_id == worker_id]
+        with self.publication_lock:
+            self.identity_store.revoke(worker_id)
+            with self._lock:
+                sessions = [s for s in self._sessions.values() if s.worker_id == worker_id]
         for session in sessions:
             session.close(note="worker revoked")
 
@@ -1263,11 +1270,16 @@ class _EndpointListener:
         try:
             self._server_socket.bind((host, port))
             self._server_socket.listen(16)
+            # Cross-thread close need not wake accept(). Bound the blocking
+            # wait so shutdown does not depend on another client or that OS behavior.
+            self._server_socket.settimeout(0.25)
         except OSError:
             self._server_socket.close()
             raise
         self._accept_thread: threading.Thread | None = None
+        self._lifecycle_lock: threading.Lock = threading.Lock()
         self._stopping: bool = False
+        self._handshaking: ssl.SSLSocket | None = None
 
     @property
     def bound_port(self) -> int:
@@ -1283,12 +1295,13 @@ class _EndpointListener:
         return previous
 
     def serve_in_background(self) -> None:
-        if self._accept_thread is not None:
-            return
-        self._accept_thread = threading.Thread(
-            target=self.serve, name="worker-endpoint-accept", daemon=True
-        )
-        self._accept_thread.start()
+        with self._lifecycle_lock:
+            if self._stopping or self._accept_thread is not None:
+                return
+            self._accept_thread = threading.Thread(
+                target=self.serve, name="worker-endpoint-accept", daemon=True
+            )
+            self._accept_thread.start()
 
     def serve(self) -> None:
         while not self._stopping:
@@ -1312,35 +1325,57 @@ class _EndpointListener:
                     pass
 
     def _handle_connection(self, connection: socket.socket) -> None:
-        wrapped: socket.socket = connection
-        if self._tls_context is not None:
-            try:
-                wrapped = self._tls_context.wrap_socket(connection, server_side=True)
-            except (ssl.SSLError, OSError):
-                try:
-                    connection.close()
-                except OSError:
-                    pass
+        with self._lifecycle_lock:
+            if self._stopping:
+                connection.close()
                 return
-        transport = SocketTransport(wrapped, recv_timeout_seconds=None)
-        try:
-            session = self._endpoint.attach_transport(transport)
-        except WorkerDispatchError:
-            transport.close()
-            return
-        self._endpoint.register_attached(session)
-        thread = threading.Thread(target=session.run, daemon=True)
-        thread.start()
+            context = self._tls_context
+            tls_connection = (
+                context.wrap_socket(connection, server_side=True, do_handshake_on_connect=False)
+                if context is not None else None
+            )
+            self._handshaking = tls_connection
+        if tls_connection is not None:
+            try:
+                try:
+                    tls_connection.do_handshake()
+                finally:
+                    with self._lifecycle_lock:
+                        self._handshaking = None
+            except OSError:
+                tls_connection.close()
+                return
+        transport = SocketTransport(tls_connection if tls_connection is not None else connection)
+        with self._lifecycle_lock:
+            if self._stopping:
+                transport.close()
+                return
+            try:
+                session = self._endpoint.attach_transport(transport)
+            except WorkerDispatchError:
+                transport.close()
+                return
+            self._endpoint.register_attached(session)
+            thread = threading.Thread(target=session.run, daemon=True)
+            thread.start()
 
     def shutdown(self) -> None:
-        self._stopping = True
+        with self._lifecycle_lock:
+            self._stopping = True
+            if self._handshaking is not None:
+                try:
+                    # Interrupt TLS I/O at the socket without clearing SSL state
+                    # out from under do_handshake(); the accept thread closes it.
+                    socket.socket.shutdown(self._handshaking, socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            thread = self._accept_thread
+        if thread is not None:
+            thread.join(timeout=5)
         try:
             self._server_socket.close()
         except OSError:
             pass
-        if self._accept_thread is not None:
-            self._accept_thread.join(timeout=5)
-            self._accept_thread = None
 
 
 def _utc_wall_now() -> datetime:
