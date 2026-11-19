@@ -543,13 +543,17 @@ class WorkerSession:
             self.close(note=f"pairing rejected: {exc.code}")
             return
         with endpoint.publication_lock:
+            # Shutdown may have closed the session while the store verified
+            # the handshake. Do not reinsert it or publish it as connected.
+            if self._state.closed:
+                return
             endpoint.connection_changed()
             with endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
                 self._state.worker_id = worker_id
                 self._state.authenticated = True
                 endpoint._sessions[id(self)] = self  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
             endpoint.connection_changed()
-        endpoint.record_connected(worker_id)
+            endpoint.record_connected(worker_id)
         self._state.writer.write_message(
             PairResultMessage(
                 negotiated_version=self._state.negotiated_version or WORKER_PROTOCOL_VERSION,
@@ -569,13 +573,15 @@ class WorkerSession:
             self.close(note=f"authentication rejected: {code}")
             return
         with endpoint.publication_lock:
+            if self._state.closed:
+                return
             endpoint.connection_changed()
             with endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
                 self._state.worker_id = hello.worker_id
                 self._state.authenticated = True
                 endpoint._sessions[id(self)] = self  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
             endpoint.connection_changed()
-        endpoint.record_connected(hello.worker_id)
+            endpoint.record_connected(hello.worker_id)
         self._state.writer.write_message(
             HelloAckMessage(
                 negotiated_version=self._state.negotiated_version or WORKER_PROTOCOL_VERSION,

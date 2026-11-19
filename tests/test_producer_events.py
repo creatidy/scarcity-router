@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
+from contextlib import ExitStack
 from dataclasses import replace
 from typing import cast
 from unittest.mock import patch
@@ -20,7 +22,7 @@ from scarcity_router.server_store import ServerStoreError
 from scarcity_router.worker_endpoint import AttemptOutcome
 from tests.server_fixtures import ServerHarness
 from tests.worker_fixtures import MemoryTransport, ScriptedWorker
-from scarcity_router.worker_protocol import ErrorMessage, ExecuteMessage, HelloAckMessage, PairResultMessage, StateReportAckMessage
+from scarcity_router.worker_protocol import ErrorMessage, ExecuteMessage, HelloAckMessage, HelloMessage, PairRequestMessage, PairResultMessage, SocketTransport, StateReportAckMessage
 from tests.test_worker_endpoint import _worker_call  # pyright: ignore[reportPrivateUsage]
 
 NOW = "2026-09-16T12:00:00.000Z"
@@ -612,6 +614,74 @@ class ProducerEventTests(ServerHarness):
         finally:
             session.close(note="cleanup")
             thread.join(timeout=5)
+
+    def test_listener_shutdown_during_authentication_cannot_publish_closed_sessions(self) -> None:
+        endpoint = self.plane.worker_endpoint
+        identities = endpoint.identity_store
+        redeem = identities.redeem_pairing_code
+        authenticate = identities.authenticate
+        worker_id, credential = redeem(identities.begin_pairing(label="known").pairing_code)
+        pairing_code = identities.begin_pairing(label="new").pairing_code
+        hello_verified = threading.Event()
+        pair_redeemed = threading.Event()
+        release = threading.Event()
+        sessions: list[threading.Thread] = []
+        paired_ids: list[str] = []
+
+        def paused_hello(identity: str, secret: str) -> None:
+            authenticate(identity, secret)
+            sessions.append(threading.current_thread())
+            hello_verified.set()
+            _ = release.wait(timeout=5)
+
+        def paused_pair(code: str) -> tuple[str, str]:
+            paired = redeem(code)
+            paired_ids.append(paired[0])
+            sessions.append(threading.current_thread())
+            pair_redeemed.set()
+            _ = release.wait(timeout=5)
+            return paired
+
+        with ExitStack() as cleanup:
+            _ = cleanup.callback(endpoint.close_all_sessions)
+            listener = endpoint.attach_listener(port=0)
+            _ = cleanup.callback(listener.shutdown)
+            listener.serve_in_background()
+            addr = ("127.0.0.1", listener.bound_port)
+            peers = tuple(
+                ScriptedWorker(SocketTransport(cleanup.enter_context(socket.create_connection(addr, timeout=2))))
+                for _ in range(2)
+            )
+            _ = cleanup.enter_context(patch.object(identities, "authenticate", paused_hello))
+            _ = cleanup.enter_context(patch.object(identities, "redeem_pairing_code", paused_pair))
+            try:
+                peers[0].send_raw(HelloMessage(worker_id, credential, (1,)).to_payload())
+                peers[1].send_raw(PairRequestMessage(pairing_code, (1,), "new").to_payload())
+                self.assertTrue(hello_verified.wait(timeout=2))
+                self.assertTrue(pair_redeemed.wait(timeout=2))
+                sources = (
+                    SourceConfig("known", "codex_subscription", "Known", worker_id),
+                    SourceConfig("new", "codex_subscription", "New", paired_ids[0]),
+                )
+                self.plane._save_config(ServerConfiguration(sources=sources))  # pyright: ignore[reportPrivateUsage]
+                before = self.plane.producer_event_snapshot()
+                self.assertEqual(2, endpoint.session_count())
+                listener.shutdown()
+                endpoint.close_all_sessions()
+                self.assertEqual(0, endpoint.session_count())
+                for peer in peers:
+                    self.assertIsNone(peer.read_raw())
+            finally:
+                release.set()
+                for session in sessions:
+                    session.join(timeout=2)
+                    self.assertFalse(session.is_alive())
+            self.assertEqual(0, endpoint.session_count())
+            self.assertEqual((), endpoint.worker_connection_state())
+            high, events, reason = self.plane.store.read_producer_events(before.cursor.epoch, before.cursor.sequence)
+            self.assertIsNone(reason)
+            self.assertEqual(before.cursor.sequence, high)
+            self.assertEqual((), events)
 
     def test_worker_protocol_rejects_complete_report_without_partial_inventory(self) -> None:
         self.plane._registry_clock = lambda: NOW  # pyright: ignore[reportPrivateUsage]
