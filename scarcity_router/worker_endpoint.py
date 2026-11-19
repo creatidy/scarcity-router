@@ -530,9 +530,19 @@ class WorkerSession:
     def _pair(self, request: PairRequestMessage) -> None:
         endpoint = self._endpoint
         try:
-            worker_id, credential = endpoint.identity_store.redeem_pairing_code(
-                request.pairing_code
-            )
+            with endpoint.publication_lock:
+                if self._state.closed:
+                    return
+                worker_id, credential = endpoint.identity_store.redeem_pairing_code(
+                    request.pairing_code
+                )
+                endpoint.connection_changed()
+                with endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+                    self._state.worker_id = worker_id
+                    self._state.authenticated = True
+                    endpoint._sessions[id(self)] = self  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+                endpoint.connection_changed()
+                endpoint.record_connected(worker_id)
         except WorkerIdentityError as exc:
             code = {
                 ERR_PAIRING_INVALID: ERR_PAIRING_INVALID,
@@ -542,18 +552,6 @@ class WorkerSession:
             self._send_error(ErrorMessage(code=code, message=exc.message, fatal=True))
             self.close(note=f"pairing rejected: {exc.code}")
             return
-        with endpoint.publication_lock:
-            # Shutdown may have closed the session while the store verified
-            # the handshake. Do not reinsert it or publish it as connected.
-            if self._state.closed:
-                return
-            endpoint.connection_changed()
-            with endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
-                self._state.worker_id = worker_id
-                self._state.authenticated = True
-                endpoint._sessions[id(self)] = self  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
-            endpoint.connection_changed()
-            endpoint.record_connected(worker_id)
         self._state.writer.write_message(
             PairResultMessage(
                 negotiated_version=self._state.negotiated_version or WORKER_PROTOCOL_VERSION,
@@ -566,22 +564,24 @@ class WorkerSession:
     def _authenticate(self, hello: HelloMessage) -> None:
         endpoint = self._endpoint
         try:
-            endpoint.identity_store.authenticate(hello.worker_id, hello.credential)
+            # Do not let either close or revocation intervene between
+            # validating the credentials and activating the session.
+            with endpoint.publication_lock:
+                if self._state.closed:
+                    return
+                endpoint.identity_store.authenticate(hello.worker_id, hello.credential)
+                endpoint.connection_changed()
+                with endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+                    self._state.worker_id = hello.worker_id
+                    self._state.authenticated = True
+                    endpoint._sessions[id(self)] = self  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+                endpoint.connection_changed()
+                endpoint.record_connected(hello.worker_id)
         except WorkerIdentityError as exc:
             code = ERR_CREDENTIAL_REVOKED if exc.code == ERR_CREDENTIAL_REVOKED else ERR_UNAUTHORIZED
             self._send_error(ErrorMessage(code=code, message=exc.message, fatal=True))
             self.close(note=f"authentication rejected: {code}")
             return
-        with endpoint.publication_lock:
-            if self._state.closed:
-                return
-            endpoint.connection_changed()
-            with endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
-                self._state.worker_id = hello.worker_id
-                self._state.authenticated = True
-                endpoint._sessions[id(self)] = self  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
-            endpoint.connection_changed()
-            endpoint.record_connected(hello.worker_id)
         self._state.writer.write_message(
             HelloAckMessage(
                 negotiated_version=self._state.negotiated_version or WORKER_PROTOCOL_VERSION,
@@ -1187,9 +1187,10 @@ class WorkerEndpoint:
 
     def revoke_worker(self, worker_id: str) -> None:
         """Revoke one device identity and close its live sessions now."""
-        self.identity_store.revoke(worker_id)
-        with self._lock:
-            sessions = [s for s in self._sessions.values() if s.worker_id == worker_id]
+        with self.publication_lock:
+            self.identity_store.revoke(worker_id)
+            with self._lock:
+                sessions = [s for s in self._sessions.values() if s.worker_id == worker_id]
         for session in sessions:
             session.close(note="worker revoked")
 
